@@ -1,204 +1,154 @@
-const Product = require("../models/Product.js");
-const { errorHandler } = require("../auth.js");
-// const User = require("../models/User.js");
+const Product = require('../models/Product.js');
+const { errorHandler } = require('../auth.js');
+const cloudinary = require('cloudinary').v2;
 
-
-
-
-
-// Create Product
-module.exports.createProduct = (req, res) => {
-    const { name, description, price } = req.body;
-
-    let newProduct = new Product({
-        name,
-        description,
-        price
-    });
-    Product.findOne({ name })
-        .then(existingProduct => {
-            if (existingProduct) {
-                return res.status(404).send({ error: 'Product already exists' });
-            } else {
-
-                return newProduct.save()
-                    .then(result => {
-                        return res.status(201).send(result);
-                    })
-                    .catch(error => errorHandler(error, req, res));
-            }
-        })
-        .catch(error => errorHandler(error, req, res));
-};
- 
-
-
-// Retrieve all products
-module.exports.retrieveAllProducts = (req, res) => {
-    return Product.find({})
-    .then(result => {
-        
-        if(result.length > 0){
-            return res.status(200).send(result);
+module.exports.createProduct = async (req, res) => {
+    try {
+        const { name, description, price, stocks, category } = req.body;
+        if (!name || !description || price == null) {
+            return res.status(400).json({ error: 'name, description, and price are required.' });
         }
-        else{
-            
-            return res.status(404).send({message: 'No products found'});
-        }
-    })
-    .catch(error => errorHandler(error, req, res));
+        const existing = await Product.findOne({ name });
+        if (existing) return res.status(409).json({ error: 'A product with that name already exists.' });
+
+        let images = [];
+        if (req.uploadedImages && req.uploadedImages.length > 0) images = req.uploadedImages;
+
+        const newProduct = new Product({ name, description, price, stocks, category, images });
+        const saved = await newProduct.save();
+        return res.status(201).json(saved);
+    } catch (error) { errorHandler(error, req, res); }
 };
 
-
-// Retrieve all active products
-module.exports.retrieveAllActive = (req, res) => {
-
-    Product.find({ isActive: true })
-    .then(result => {
-
-        if(result.length > 0){
-            return res.status(200).send(result)
-        }
-        else{ 
-
-            return res.status(404).send({ message: 'No active products found' });
-            
-        }
-    })
-    .catch(error => errorHandler(error, req, res));
+module.exports.uploadProductImages = async (req, res) => {
+    try {
+        const product = await Product.findById(req.params.productId);
+        if (!product) return res.status(404).json({ error: 'Product not found.' });
+        if (!req.uploadedImages || req.uploadedImages.length === 0) return res.status(400).json({ error: 'No images were uploaded.' });
+        product.images.push(...req.uploadedImages);
+        await product.save();
+        return res.status(200).json({ message: 'Images added.', images: product.images });
+    } catch (error) { errorHandler(error, req, res); }
 };
 
-
-// Retrieve single product
-module.exports.retrieveSingleProduct = (req, res) => {
-    Product.findById(req.params.productId) 
-    .then(product => {
-        if (product) {
-            return res.status(200).send(product);
-        } else {
-            return res.status(404).send({ message: 'Product not found' });
-        }
-    })
-    .catch(error => errorHandler(error, req, res)); 
-};
-
-
-// Update product
-module.exports.updateProduct = (req, res)=>{
-
-    let updatedProduct = {
-        name: req.body.name,
-        description: req.body.description,
-        price: req.body.price
-    }
-
-    return Product.findByIdAndUpdate(req.params.productId, updatedProduct)
-    .then(product => {
-        if (product) {
-            res.status(200).send({ success: true, message: 'Product updated successfully' });
-        } else {
-            res.status(404).send({ message: 'Product not found' });
-        }
-    })
-    .catch(error => errorHandler(error, req, res));
-};
-
-
-// Archive Product 
-module.exports.archiveProduct = (req, res) => {
-  
-    let updateActiveField = {
-        isActive: false
-    };
-
-    Product.findByIdAndUpdate(req.params.productId, updateActiveField)
-        .then(product => {
-            if (product) {
-                if (!product.isActive) {
-                  
-                    return res.status(200).send({ 
-                        message: 'Product already archived',
-                        archivedProduct: product
-                        });
+module.exports.deleteProductImage = async (req, res) => {
+    try {
+        const { productId, imageId } = req.params;
+        const product = await Product.findById(productId);
+        if (!product) return res.status(404).json({ error: 'Product not found.' });
+        const imageIndex = product.images.findIndex(img => img._id.toString() === imageId);
+        if (imageIndex === -1) return res.status(404).json({ error: 'Image not found.' });
+        const imgUrl = product.images[imageIndex].url;
+        if (imgUrl.includes('cloudinary.com')) {
+            try {
+                const parts = imgUrl.split('/');
+                const uploadIdx = parts.indexOf('upload');
+                if (uploadIdx !== -1) {
+                    const publicId = parts.slice(uploadIdx + 2).join('/').replace(/\.[^/.]+$/, '');
+                    await cloudinary.uploader.destroy(publicId);
                 }
-                
-                return res.status(200).send({ 
-                            message: 'Product archived successfully'
-                        });
-            } else {
-                
-                return res.status(404).send({ error: 'Product not found' });
-            }
-        })
-        .catch(error => errorHandler(error, req, res));
+            } catch (cloudErr) { console.error('Cloudinary delete error:', cloudErr); }
+        }
+        product.images.splice(imageIndex, 1);
+        await product.save();
+        return res.status(200).json({ message: 'Image deleted.', images: product.images });
+    } catch (error) { errorHandler(error, req, res); }
 };
 
-
-// Activate Product
-module.exports.activateProduct = (req, res) => {
-  
-    let updateActiveField = {
-        isActive: true
-    }
-
-    Product.findByIdAndUpdate(req.params.productId, updateActiveField)
-        .then(product => {
-            
-            if (product) {
-                
-                if (product.isActive) {
-                    
-                    return res.status(200).send({ 
-                        message: 'Product already activated', 
-                        activateProduct: product
-                    });
-                }
-                
-                return res.status(200).send({
-                    message: 'Product activated successfully'
-                });
-            } else {
-                
-                return res.status(404).send({ error: 'Product not found' });
-            }
-        })
-        .catch(error => errorHandler(error, req, res));
+// ─── PATCH /products/:productId/images/reorder ───────────────────────────────
+module.exports.reorderProductImages = async (req, res) => {
+    try {
+        const product = await Product.findById(req.params.productId);
+        if (!product) return res.status(404).json({ error: 'Product not found.' });
+        const { imageIds } = req.body;
+        if (!Array.isArray(imageIds)) return res.status(400).json({ error: 'imageIds must be an array.' });
+        const sorted = imageIds.map(id => product.images.find(img => img._id.toString() === id)).filter(Boolean);
+        const includedIds = new Set(imageIds);
+        product.images.forEach(img => { if (!includedIds.has(img._id.toString())) sorted.push(img); });
+        product.images = sorted;
+        await product.save();
+        return res.status(200).json({ message: 'Images reordered.', images: product.images });
+    } catch (error) { errorHandler(error, req, res); }
 };
 
-
-// Search product by name
-module.exports.searchByName = (req, res) => {
-    const { productName } = req.body;
-
-    if (!productName || typeof productName !== 'string') {
-        return res.status(200).json([]);
-    }
-
-    Product.findOne({ name: productName })
-        .then(product => {
-            if (!product) {
-                return res.status(200).json([]);
-            }
-
-            res.json(product);
-        })
-        .catch(error => errorHandler(error, req, res));
+// ─── POST /products/:productId/images/add-url ────────────────────────────────
+module.exports.addProductImageByUrl = async (req, res) => {
+    try {
+        const product = await Product.findById(req.params.productId);
+        if (!product) return res.status(404).json({ error: 'Product not found.' });
+        const { url, altText } = req.body;
+        if (!url || !url.trim()) return res.status(400).json({ error: 'url is required.' });
+        product.images.push({ url: url.trim(), altText: altText?.trim() || '' });
+        await product.save();
+        return res.status(200).json({ message: 'Image added.', images: product.images });
+    } catch (error) { errorHandler(error, req, res); }
 };
 
+module.exports.retrieveAllProducts = async (req, res) => {
+    try { return res.status(200).json(await Product.find({})); }
+    catch (error) { errorHandler(error, req, res); }
+};
 
+module.exports.retrieveAllActive = async (req, res) => {
+    try { return res.status(200).json(await Product.find({ isActive: true })); }
+    catch (error) { errorHandler(error, req, res); }
+};
 
-// Search product by price
-module.exports.searchByPrice = (req, res) => {
-    const { minPrice, maxPrice } = req.body;
+module.exports.retrieveSingleProduct = async (req, res) => {
+    try {
+        const product = await Product.findById(req.params.productId);
+        if (!product) return res.status(404).json({ error: 'Product not found.' });
+        return res.status(200).json(product);
+    } catch (error) { errorHandler(error, req, res); }
+};
 
-    Product.find({ price: { $gte: minPrice, $lte: maxPrice } })
-        .then(products => {
-            if (products.length === 0) {
-                res.status(404).send({ message: 'No products found within the specified price range' });
-            } else {
-                res.status(200).send(products);
-            }
-        })
-        .catch(error => errorHandler(error, req, res));
+// Update — supports name, description, price, stocks, category, options, configurations, kits
+module.exports.updateProduct = async (req, res) => {
+    try {
+        const allowed = ['name', 'description', 'price', 'stocks', 'category', 'options', 'configurations', 'configAvailabilityRules', 'kits', 'specifications'];
+        const updateData = {};
+        for (const field of allowed) {
+            if (req.body[field] !== undefined) updateData[field] = req.body[field];
+        }
+        const updated = await Product.findByIdAndUpdate(req.params.productId, updateData, { new: true, runValidators: true });
+        if (!updated) return res.status(404).json({ error: 'Product not found.' });
+        return res.status(200).json({ message: 'Product updated successfully.', product: updated });
+    } catch (error) { errorHandler(error, req, res); }
+};
 
+module.exports.archiveProduct = async (req, res) => {
+    try {
+        const product = await Product.findById(req.params.productId);
+        if (!product) return res.status(404).json({ error: 'Product not found.' });
+        if (!product.isActive) return res.status(200).json({ message: 'Product is already archived.' });
+        product.isActive = false; await product.save();
+        return res.status(200).json({ message: 'Product archived successfully.' });
+    } catch (error) { errorHandler(error, req, res); }
+};
+
+module.exports.activateProduct = async (req, res) => {
+    try {
+        const product = await Product.findById(req.params.productId);
+        if (!product) return res.status(404).json({ error: 'Product not found.' });
+        if (product.isActive) return res.status(200).json({ message: 'Product is already active.' });
+        product.isActive = true; await product.save();
+        return res.status(200).json({ message: 'Product activated successfully.' });
+    } catch (error) { errorHandler(error, req, res); }
+};
+
+module.exports.searchByName = async (req, res) => {
+    try {
+        const { productName } = req.body;
+        if (!productName || typeof productName !== 'string') return res.status(400).json({ error: 'productName is required.' });
+        const escaped = productName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        return res.status(200).json(await Product.find({ name: { $regex: escaped, $options: 'i' }, isActive: true }));
+    } catch (error) { errorHandler(error, req, res); }
+};
+
+module.exports.searchByPrice = async (req, res) => {
+    try {
+        const { minPrice, maxPrice } = req.body;
+        if (minPrice == null || maxPrice == null) return res.status(400).json({ error: 'minPrice and maxPrice are required.' });
+        return res.status(200).json(await Product.find({ price: { $gte: minPrice, $lte: maxPrice }, isActive: true }));
+    } catch (error) { errorHandler(error, req, res); }
 };

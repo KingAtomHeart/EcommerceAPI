@@ -1,57 +1,58 @@
-const express = require("express");
-const mongoose = require("mongoose");
-const cors = require("cors");
-
-
-const userRoutes = require("./routes/user")
-const productRoutes = require("./routes/product")
-const cartRoutes = require("./routes/cart")
-const orderRoutes = require("./routes/order")
-
-
+const express = require('express');
+const mongoose = require('mongoose');
+const cors = require('cors');
 require('dotenv').config();
+
+const userRoutes = require('./routes/user');
+const productRoutes = require('./routes/product');
+const cartRoutes = require('./routes/cart');
+const orderRoutes = require('./routes/order');
+const groupBuyRoutes = require('./routes/groupBuy');
+const uploadRoutes = require('./routes/upload');
+const homepageRoutes = require('./routes/homepageContent');
+const contactRoutes = require('./routes/contact');
+const { errorHandler } = require('./auth');
 
 const app = express();
 
-mongoose.connect(process.env.MONGODB_STRING);
+// ─── Database ─────────────────────────────────────────────────────────────────
+mongoose.connect(process.env.MONGODB_STRING)
+    .then(() => console.log('Connected to MongoDB Atlas'))
+    .catch((err) => console.error('MongoDB connection error:', err));
 
-mongoose.connection.once('open', () => console.log('Now connected to MongoDB Atlas'));
-
-app.use(express.json());
-app.use(express.urlencoded({extended:true}));
-
+// ─── Middleware ───────────────────────────────────────────────────────────────
+app.use(express.json({ limit: '10mb' }));
+app.use(express.urlencoded({ extended: true }));
 
 const corsOptions = {
-    origin: [
-        'http://localhost:3000', 
-        'http://zuitt-bootcamp-prod-495-8145-ortega.s3-website.us-east-1.amazonaws.com',
-        'http://zuitt-bootcamp-prod-495-8229-bamba.s3-website.us-east-1.amazonaws.com'
-    ],
+    origin: process.env.ALLOWED_ORIGINS
+        ? process.env.ALLOWED_ORIGINS.split(',')
+        : ['http://localhost:3000'],
     credentials: true,
     optionsSuccessStatus: 200
 };
-
 app.use(cors(corsOptions));
-// app.use(cors());
 
+// ─── Routes ───────────────────────────────────────────────────────────────────
+app.use('/b1/users', userRoutes);
+app.use('/b1/products', productRoutes);
+app.use('/b1/cart', cartRoutes);
+app.use('/b1/orders', orderRoutes);
+app.use('/b1/group-buys', groupBuyRoutes);
+app.use('/b1/upload', uploadRoutes);
+app.use('/b1/homepage', homepageRoutes);
+app.use('/b1/contact', contactRoutes);
 
-// Backend routes for user 
-app.use("/b1/users", userRoutes);
-// Backend routes for products
-app.use("/b1/products", productRoutes);
-// Backend routes for cart 
-app.use("/b1/cart", cartRoutes);
-// Backend routes for order
-app.use("/b1/orders", orderRoutes);
+// Health check
+app.get('/health', (req, res) => res.status(200).json({ status: 'OK' }));
 
+// ─── Global Error Handler ─────────────────────────────────────────────────────
+app.use(errorHandler);
 
-
-// Checking and running server
-if(require.main === module){
-	app.listen(process.env.PORT || 3000, () => {
-		console.log(`API is now online on port ${ process.env.PORT || 3000}`)
-	});
+// ─── Start Server ─────────────────────────────────────────────────────────────
+if (require.main === module) {
+    const PORT = process.env.PORT || 4000;
+    app.listen(PORT, () => console.log(`API running on port ${PORT}`));
 }
 
-
-module.exports = {app, mongoose};
+module.exports = { app, mongoose };
