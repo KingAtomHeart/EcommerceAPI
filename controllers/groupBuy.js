@@ -153,7 +153,7 @@ module.exports.getAllGroupBuys = async (req, res) => {
 
 module.exports.getActiveGroupBuys = async (req, res) => {
     try {
-        return res.status(200).json(await GroupBuy.find({}).select('name description basePrice options images status category orderCount endDate moq maxOrders isActive').sort({ createdAt: -1 }));
+        return res.status(200).json(await GroupBuy.find({ isActive: true }).select('name description basePrice options images status category orderCount endDate moq maxOrders isActive').sort({ createdAt: -1 }));
     } catch (error) { errorHandler(error, req, res); }
 };
 
