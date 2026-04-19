@@ -6,6 +6,21 @@ const { errorHandler } = require('../auth.js');
 const recalcTotal = (cartItems) =>
     cartItems.reduce((sum, item) => sum + item.subtotal, 0);
 
+// Returns true if two configurations arrays represent the same selection.
+const configsMatch = (a, b) => {
+    const aArr = a || [];
+    const bArr = b || [];
+    if (aArr.length !== bArr.length) return false;
+    return aArr.every(c => bArr.some(d => d.name === c.name && d.selected === c.selected));
+};
+
+// Sum cart quantities for a given product where a specific config option is selected.
+const cartQtyForConfigOption = (cartItems, productId, configName, configValue) =>
+    (cartItems || [])
+        .filter(i => i.productId.toString() === productId &&
+            i.configurations?.some(c => c.name === configName && c.selected === configValue))
+        .reduce((sum, i) => sum + i.quantity, 0);
+
 // Resolve unit price from a product + cart request body.
 // Priority: option group selection > legacy kit > base price + config modifiers.
 function resolveUnitPrice(product, { optionGroupId, optionValueId, kitId, configurations }) {
@@ -183,13 +198,17 @@ module.exports.addToCart = async (req, res) => {
                 return res.status(400).json({ error: `Only ${product.stocks} item(s) in stock.` });
             }
             if (configurations?.length > 0) {
+                const existingCartForProduct = (await Cart.findOne({ userId: req.user.id }))?.cartItems || [];
                 for (const chosen of configurations) {
                     const cfgDef = product.configurations?.find(c => c.name === chosen.name);
                     const opt = cfgDef?.options?.find(o => o.value === chosen.selected);
                     if (opt) {
                         if (!opt.available) return res.status(400).json({ error: `"${opt.value}" for ${chosen.name} is not available.` });
-                        if (opt.stocks >= 0 && opt.stocks < quantity) {
-                            return res.status(400).json({ error: `Only ${opt.stocks} "${opt.value}" (${chosen.name}) in stock.` });
+                        if (opt.stocks >= 0) {
+                            const alreadyInCart = cartQtyForConfigOption(existingCartForProduct, productId, chosen.name, chosen.selected);
+                            if (opt.stocks < alreadyInCart + quantity) {
+                                return res.status(400).json({ error: `Only ${opt.stocks} "${opt.value}" (${chosen.name}) in stock.${alreadyInCart > 0 ? ` You already have ${alreadyInCart} in cart.` : ''}` });
+                            }
                         }
                     }
                     // Check availability rules (multi-condition AND semantics)
@@ -229,7 +248,8 @@ module.exports.addToCart = async (req, res) => {
         } else {
             const existingItem = cart.cartItems.find(item =>
                 item.productId.toString() === productId &&
-                (item.kitId?.toString() || null) === (kitIdVal?.toString() || null)
+                (item.kitId?.toString() || null) === (kitIdVal?.toString() || null) &&
+                configsMatch(item.configurations, configurations)
             );
             if (existingItem) {
                 const newQty = existingItem.quantity + quantity;
@@ -246,8 +266,15 @@ module.exports.addToCart = async (req, res) => {
                         for (const chosen of configurations) {
                             const cfgDef = product.configurations?.find(c => c.name === chosen.name);
                             const opt = cfgDef?.options?.find(o => o.value === chosen.selected);
-                            if (opt?.stocks >= 0 && opt.stocks < newQty) {
-                                return res.status(400).json({ error: `Only ${opt.stocks} "${opt.value}" (${chosen.name}) in stock. You already have ${existingItem.quantity} in cart.` });
+                            if (opt?.stocks >= 0) {
+                                // Total cart usage of this config option across all combinations
+                                const otherCartQty = cartQtyForConfigOption(
+                                    cart.cartItems.filter(i => i !== existingItem),
+                                    productId, chosen.name, chosen.selected
+                                );
+                                if (opt.stocks < otherCartQty + newQty) {
+                                    return res.status(400).json({ error: `Only ${opt.stocks} "${opt.value}" (${chosen.name}) in stock. You already have ${otherCartQty + existingItem.quantity} in cart.` });
+                                }
                             }
                         }
                     }
