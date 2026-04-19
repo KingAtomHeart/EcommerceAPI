@@ -41,10 +41,11 @@ module.exports.createOrder = async (req, res) => {
             }
         }
 
-        // Validate config option stocks against cart totals
+        // Validate config option stocks against cart totals + availability rules
         for (const item of cart.cartItems) {
             const product = item.productId;
             if (!product) continue;
+            const configMap = Object.fromEntries((item.configurations || []).map(c => [c.name, c.selected]));
             for (const c of (item.configurations || [])) {
                 const cfgDef = product.configurations?.find(cf => cf.name === c.name);
                 const opt = cfgDef?.options?.find(o => o.value === c.selected);
@@ -57,6 +58,17 @@ module.exports.createOrder = async (req, res) => {
                     const requested = configTotals.get(key) || 0;
                     if (opt.stocks < requested) {
                         return res.status(400).json({ error: `Only ${opt.stocks} "${opt.value}" (${c.name}) in stock. You have ${requested} across your cart items.` });
+                    }
+                }
+                // Availability rules (multi-condition AND) — reject invalid combos
+                if (product.configAvailabilityRules?.length > 0) {
+                    for (const rule of product.configAvailabilityRules) {
+                        if (rule.targetConfigName !== c.name) continue;
+                        const conds = rule.conditions || (rule.configName ? [{ configName: rule.configName, selectedValue: rule.selectedValue }] : []);
+                        const active = conds.length > 0 && conds.every(cond => configMap[cond.configName] === cond.selectedValue);
+                        if (active && !rule.availableValues.includes(c.selected)) {
+                            return res.status(400).json({ error: `"${c.selected}" for ${c.name} is not a valid combination with the selected configuration.` });
+                        }
                     }
                 }
             }
