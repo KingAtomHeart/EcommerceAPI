@@ -325,8 +325,48 @@ module.exports.placeOrder = async (req, res) => {
 
 module.exports.getMyOrders = async (req, res) => {
     try {
-        const orders = await GroupBuyOrder.find({ userId: req.user.id }).populate('groupBuyId', 'name status images').sort({ createdAt: -1 });
+        const orders = await GroupBuyOrder
+            .find({ userId: req.user.id })
+            .populate('groupBuyId', 'name status images basePrice category')
+            .sort({ createdAt: -1 });
         return res.status(200).json({ orders });
+    } catch (error) { errorHandler(error, req, res); }
+};
+
+module.exports.cancelMyOrder = async (req, res) => {
+    try {
+        const order = await GroupBuyOrder.findById(req.params.orderId);
+        if (!order) return res.status(404).json({ error: 'Order not found.' });
+        if (order.userId.toString() !== req.user.id) {
+            return res.status(403).json({ error: 'Not your order.' });
+        }
+        if (order.status !== 'Confirmed') {
+            return res.status(400).json({ error: `Cannot cancel an order in "${order.status}" status.` });
+        }
+        const gb = await GroupBuy.findById(order.groupBuyId);
+        if (!gb) return res.status(404).json({ error: 'Group buy not found.' });
+        const cancellablePhases = ['interest-check', 'open', 'closing-soon'];
+        if (!cancellablePhases.includes(gb.status)) {
+            return res.status(400).json({ error: `Cannot cancel — group buy is in "${gb.status}" phase.` });
+        }
+
+        // Restock the selected option value if stocks were tracked
+        if (order.selectedOption?.value && gb.options?.length > 0) {
+            for (const grp of gb.options) {
+                if (grp.name !== order.selectedOption.groupName) continue;
+                const val = grp.values.find(v => v.value === order.selectedOption.value);
+                if (val && val.stocks >= 0) {
+                    val.stocks += (order.quantity || 1);
+                    val.available = true;
+                }
+            }
+        }
+        gb.orderCount = Math.max(0, (gb.orderCount || 1) - 1);
+        await gb.save();
+
+        order.status = 'Cancelled';
+        await order.save();
+        return res.status(200).json({ message: 'Order cancelled.', order });
     } catch (error) { errorHandler(error, req, res); }
 };
 

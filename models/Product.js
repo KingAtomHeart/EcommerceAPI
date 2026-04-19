@@ -16,13 +16,16 @@ const configOptionSchema = new mongoose.Schema({
     }]
 }, { _id: true });
 
-// Rules that restrict which config values are available for a given config selection.
-// Example: Layout=WKL → Color can only be [Red, Blue, Green] (not Yellow).
+// Rules that restrict which config values are available for a given combination of selections.
+// Each rule has an AND-list of conditions; the rule is active only when ALL conditions match.
+// Example: When Color=Beige/Mint AND Layout=WK → Grade allows [B-Stock] only.
 const configAvailabilityRuleSchema = new mongoose.Schema({
-    configName: { type: String, required: true },       // e.g., "Layout"
-    selectedValue: { type: String, required: true },     // e.g., "WKL"
-    targetConfigName: { type: String, required: true },  // e.g., "Color"
-    availableValues: [{ type: String }]                  // e.g., ["Red", "Blue", "Green"]
+    conditions: [{
+        configName: { type: String, required: true },
+        selectedValue: { type: String, required: true }
+    }],
+    targetConfigName: { type: String, required: true },
+    availableValues: [{ type: String }]
 }, { _id: true });
 
 // Option values within a named option group (e.g., "Base Kit" at ₱7300).
@@ -85,5 +88,24 @@ const productSchema = new mongoose.Schema({
 }, { timestamps: true });
 
 productSchema.index({ name: 'text', description: 'text' });
+
+// Upgrade legacy single-condition rules (configName/selectedValue) to conditions[] shape on save.
+productSchema.pre('validate', function (next) {
+    if (Array.isArray(this.configAvailabilityRules)) {
+        this.configAvailabilityRules = this.configAvailabilityRules.map(r => {
+            if (Array.isArray(r.conditions) && r.conditions.length > 0) return r;
+            if (r.configName && r.selectedValue) {
+                return {
+                    _id: r._id,
+                    conditions: [{ configName: r.configName, selectedValue: r.selectedValue }],
+                    targetConfigName: r.targetConfigName,
+                    availableValues: r.availableValues || []
+                };
+            }
+            return r;
+        });
+    }
+    next();
+});
 
 module.exports = mongoose.model('Product', productSchema);

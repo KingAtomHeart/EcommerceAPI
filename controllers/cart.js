@@ -103,14 +103,15 @@ module.exports.addToCart = async (req, res) => {
             // Validate config availability rules and stock
             if (configurations?.length > 0) {
                 for (const chosen of configurations) {
-                    // Check availability rules
+                    // Check availability rules (multi-condition AND semantics)
                     if (product.configAvailabilityRules?.length > 0) {
+                        const configMap = Object.fromEntries(configurations.map(c => [c.name, c.selected]));
                         for (const rule of product.configAvailabilityRules) {
-                            const ruleSourceSelected = configurations.find(c => c.name === rule.configName)?.selected;
-                            if (rule.targetConfigName === chosen.name && ruleSourceSelected === rule.selectedValue) {
-                                if (!rule.availableValues.includes(chosen.selected)) {
-                                    return res.status(400).json({ error: `"${chosen.selected}" for ${chosen.name} is not available with "${ruleSourceSelected}".` });
-                                }
+                            if (rule.targetConfigName !== chosen.name) continue;
+                            const conds = rule.conditions || (rule.configName ? [{ configName: rule.configName, selectedValue: rule.selectedValue }] : []);
+                            const active = conds.length > 0 && conds.every(c => configMap[c.configName] === c.selectedValue);
+                            if (active && !rule.availableValues.includes(chosen.selected)) {
+                                return res.status(400).json({ error: `"${chosen.selected}" for ${chosen.name} is not available with the selected configuration.` });
                             }
                         }
                     }
@@ -191,14 +192,15 @@ module.exports.addToCart = async (req, res) => {
                             return res.status(400).json({ error: `Only ${opt.stocks} "${opt.value}" (${chosen.name}) in stock.` });
                         }
                     }
-                    // Check availability rules
+                    // Check availability rules (multi-condition AND semantics)
                     if (product.configAvailabilityRules?.length > 0) {
+                        const configMap = Object.fromEntries(configurations.map(c => [c.name, c.selected]));
                         for (const rule of product.configAvailabilityRules) {
-                            const ruleSourceSelected = configurations.find(c => c.name === rule.configName)?.selected;
-                            if (rule.targetConfigName === chosen.name && ruleSourceSelected === rule.selectedValue) {
-                                if (!rule.availableValues.includes(chosen.selected)) {
-                                    return res.status(400).json({ error: `"${chosen.selected}" for ${chosen.name} is not available with "${ruleSourceSelected}".` });
-                                }
+                            if (rule.targetConfigName !== chosen.name) continue;
+                            const conds = rule.conditions || (rule.configName ? [{ configName: rule.configName, selectedValue: rule.selectedValue }] : []);
+                            const active = conds.length > 0 && conds.every(c => configMap[c.configName] === c.selectedValue);
+                            if (active && !rule.availableValues.includes(chosen.selected)) {
+                                return res.status(400).json({ error: `"${chosen.selected}" for ${chosen.name} is not available with the selected configuration.` });
                             }
                         }
                     }
