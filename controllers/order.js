@@ -80,7 +80,14 @@ module.exports.createOrder = async (req, res) => {
                 productId: product._id,
                 productName: product.name + optionLabel + (configStr ? ` (${configStr})` : ''),
                 quantity: item.quantity,
-                subtotal
+                subtotal,
+                selectedOption: item.selectedOption?.groupId ? {
+                    groupId: item.selectedOption.groupId,
+                    groupName: item.selectedOption.groupName,
+                    valueId: item.selectedOption.valueId,
+                    value: item.selectedOption.value
+                } : undefined,
+                configurations: item.configurations || []
             });
         }
 
@@ -255,13 +262,48 @@ module.exports.updateOrderStatus = async (req, res) => {
             return res.status(400).json({ error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` });
         }
 
-        const order = await Order.findByIdAndUpdate(
-            req.params.orderId,
-            { status },
-            { new: true }
-        );
+        const existing = await Order.findById(req.params.orderId);
+        if (!existing) return res.status(404).json({ error: 'Order not found.' });
 
-        if (!order) return res.status(404).json({ error: 'Order not found.' });
+        const wasCancelled = existing.status === 'Cancelled';
+        existing.status = status;
+        const order = await existing.save();
+
+        // Restore stock when transitioning into Cancelled
+        if (status === 'Cancelled' && !wasCancelled) {
+            for (const item of order.productsOrdered) {
+                const fullProduct = await Product.findById(item.productId);
+                if (!fullProduct) continue;
+                let needsSave = false;
+
+                if (item.selectedOption?.groupId) {
+                    const group = fullProduct.options?.id(item.selectedOption.groupId);
+                    const val = group?.values?.id(item.selectedOption.valueId);
+                    if (val && val.stocks >= 0) {
+                        val.stocks += item.quantity;
+                        val.available = true;
+                        needsSave = true;
+                    }
+                } else if (fullProduct.stocks !== undefined && fullProduct.stocks !== -1) {
+                    fullProduct.stocks += item.quantity;
+                    needsSave = true;
+                }
+
+                if (item.configurations?.length > 0) {
+                    for (const chosen of item.configurations) {
+                        const cfgDef = fullProduct.configurations?.find(c => c.name === chosen.name);
+                        const cfgOpt = cfgDef?.options?.find(o => o.value === chosen.selected);
+                        if (cfgOpt && cfgOpt.stocks >= 0) {
+                            cfgOpt.stocks += item.quantity;
+                            cfgOpt.available = true;
+                            needsSave = true;
+                        }
+                    }
+                }
+
+                if (needsSave) await fullProduct.save();
+            }
+        }
 
         return res.status(200).json({ message: 'Order status updated.', order });
     } catch (error) {
