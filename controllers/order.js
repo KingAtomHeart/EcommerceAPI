@@ -30,6 +30,38 @@ module.exports.createOrder = async (req, res) => {
             return res.status(400).json({ error: 'Your cart is empty. Add items before checking out.' });
         }
 
+        // Tally total cart quantities per product/config-option across ALL cart items
+        // so shared option values (e.g. two items both using Grade=B-Stock) are
+        // validated together, not per-item.
+        const configTotals = new Map(); // key: `${productId}::${configName}::${configValue}` -> qty
+        for (const item of cart.cartItems) {
+            for (const c of (item.configurations || [])) {
+                const key = `${item.productId?._id || item.productId}::${c.name}::${c.selected}`;
+                configTotals.set(key, (configTotals.get(key) || 0) + item.quantity);
+            }
+        }
+
+        // Validate config option stocks against cart totals
+        for (const item of cart.cartItems) {
+            const product = item.productId;
+            if (!product) continue;
+            for (const c of (item.configurations || [])) {
+                const cfgDef = product.configurations?.find(cf => cf.name === c.name);
+                const opt = cfgDef?.options?.find(o => o.value === c.selected);
+                if (!opt) continue;
+                if (opt.available === false) {
+                    return res.status(400).json({ error: `"${opt.value}" for ${c.name} is no longer available.` });
+                }
+                if (opt.stocks >= 0) {
+                    const key = `${product._id}::${c.name}::${c.selected}`;
+                    const requested = configTotals.get(key) || 0;
+                    if (opt.stocks < requested) {
+                        return res.status(400).json({ error: `Only ${opt.stocks} "${opt.value}" (${c.name}) in stock. You have ${requested} across your cart items.` });
+                    }
+                }
+            }
+        }
+
         // Recalculate prices from current product data + validate stock
         const productsOrdered = [];
         let totalPrice = 0;
