@@ -242,6 +242,15 @@ module.exports.addToCart = async (req, res) => {
                     if (product.stocks !== undefined && product.stocks !== -1 && product.stocks < newQty) {
                         return res.status(400).json({ error: `Only ${product.stocks} item(s) in stock. You already have ${existingItem.quantity} in cart.` });
                     }
+                    if (configurations?.length > 0) {
+                        for (const chosen of configurations) {
+                            const cfgDef = product.configurations?.find(c => c.name === chosen.name);
+                            const opt = cfgDef?.options?.find(o => o.value === chosen.selected);
+                            if (opt?.stocks >= 0 && opt.stocks < newQty) {
+                                return res.status(400).json({ error: `Only ${opt.stocks} "${opt.value}" (${chosen.name}) in stock. You already have ${existingItem.quantity} in cart.` });
+                            }
+                        }
+                    }
                 }
                 existingItem.quantity = newQty;
                 existingItem.subtotal = unitPrice * newQty;

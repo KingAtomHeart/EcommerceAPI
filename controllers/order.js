@@ -109,9 +109,8 @@ module.exports.createOrder = async (req, res) => {
                     if (val.stocks === 0) val.available = false;
                     needsSave = true;
                 }
-            } else {
-                // Decrement product-level stock
-                fullProduct.stocks = Math.max(0, (fullProduct.stocks || 0) - item.quantity);
+            } else if (fullProduct.stocks !== undefined && fullProduct.stocks !== -1) {
+                fullProduct.stocks = Math.max(0, fullProduct.stocks - item.quantity);
                 needsSave = true;
             }
 
