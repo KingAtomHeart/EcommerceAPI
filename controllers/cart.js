@@ -2,6 +2,7 @@ const Cart = require('../models/Cart.js');
 const Product = require('../models/Product.js');
 const GroupBuy = require('../models/GroupBuy.js');
 const { errorHandler } = require('../auth.js');
+const { toObj } = require('../utils/variantResolution.js');
 
 const recalcTotal = (cartItems) =>
     cartItems.reduce((sum, item) => sum + item.subtotal, 0);
@@ -64,7 +65,7 @@ function resolveUnitPrice(product, { optionGroupId, optionValueId, kitId, config
 module.exports.retrieveUserCart = async (req, res) => {
     try {
         const cart = await Cart.findOne({ userId: req.user.id })
-            .populate('cartItems.productId', 'name price images isActive stocks options kits')
+            .populate('cartItems.productId', 'name price images isActive stocks options kits useVariants variants variantImages')
             .populate('cartItems.groupBuyId', 'name images status basePrice options');
 
         if (!cart || cart.cartItems.length === 0) {
@@ -101,6 +102,48 @@ module.exports.addToCart = async (req, res) => {
             return res.status(400).json({
                 error: 'Your cart contains group buy items. Please clear your cart or checkout first before adding regular items.'
             });
+        }
+
+        // ── Variant-based purchase ──
+        if (product.useVariants) {
+            const { variantId } = req.body;
+            if (!variantId) return res.status(400).json({ error: 'variantId is required for this product.' });
+            const variant = product.variants?.id(variantId);
+            if (!variant) return res.status(404).json({ error: 'Variant not found.' });
+            if (variant.available === false) return res.status(400).json({ error: 'This variant is not available.' });
+
+            let cart = existingCart;
+            const existing = cart?.cartItems.find(i =>
+                i.productId.toString() === productId &&
+                i.variantId?.toString() === variantId
+            );
+            const existingQty = existing?.quantity || 0;
+            if (variant.stock >= 0 && variant.stock < existingQty + quantity) {
+                return res.status(400).json({
+                    error: `Only ${variant.stock} in stock.${existingQty > 0 ? ` You already have ${existingQty} in cart.` : ''}`
+                });
+            }
+
+            const unitPrice = variant.price != null ? variant.price : product.price;
+            const subtotal = unitPrice * quantity;
+            const attrsSnapshot = toObj(variant.attributes);
+
+            if (!cart) {
+                cart = new Cart({
+                    userId: req.user.id,
+                    cartItems: [{ productId, variantId, variantAttributes: attrsSnapshot, quantity, subtotal }],
+                    totalPrice: subtotal
+                });
+            } else if (existing) {
+                existing.quantity = existingQty + quantity;
+                existing.subtotal = unitPrice * existing.quantity;
+                cart.totalPrice = recalcTotal(cart.cartItems);
+            } else {
+                cart.cartItems.push({ productId, variantId, variantAttributes: attrsSnapshot, quantity, subtotal });
+                cart.totalPrice = recalcTotal(cart.cartItems);
+            }
+            await cart.save();
+            return res.status(200).json({ message: 'Added to cart.', cart });
         }
 
         // ── Option-based purchase (new system) ──

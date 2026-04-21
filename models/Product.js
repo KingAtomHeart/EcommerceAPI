@@ -61,6 +61,28 @@ const kitSchema = new mongoose.Schema({
     stocks: { type: Number, default: -1 } // -1 = unlimited
 }, { _id: true });
 
+// ── Variant dimensions ──
+const variantDimensionSchema = new mongoose.Schema({
+    name: { type: String, required: true },
+    values: [{ type: String, required: true }]
+}, { _id: true });
+
+// ── Variant row (one sellable SKU) ──
+const variantSchema = new mongoose.Schema({
+    attributes: { type: Map, of: String, required: true },
+    stock: { type: Number, default: -1 },
+    price: { type: Number, default: null },
+    sku: { type: String, default: '' },
+    available: { type: Boolean, default: true }
+}, { _id: true });
+
+// ── Variant image (appliesTo is a partial attrs map; empty = wildcard) ──
+const variantImageSchema = new mongoose.Schema({
+    url: { type: String, required: true },
+    publicId: { type: String, default: '' },
+    appliesTo: { type: Map, of: String, default: {} }
+}, { _id: true });
+
 const productSchema = new mongoose.Schema({
     name: { type: String, required: [true, 'Product name is required'], trim: true },
     // Supports markdown: **bold**, *italic*, # headings, - lists, blank lines = paragraphs
@@ -76,6 +98,10 @@ const productSchema = new mongoose.Schema({
     configurations: [configOptionSchema],   // Config selectors that add to the base/option price
     configAvailabilityRules: [configAvailabilityRuleSchema], // Cross-config availability filtering
     kits: [kitSchema],                      // LEGACY: kept for backward compat, not used in new UI
+    useVariants: { type: Boolean, default: false },
+    variantDimensions: [variantDimensionSchema],
+    variants: [variantSchema],
+    variantImages: [variantImageSchema],
     category: { type: String, trim: true, default: 'Uncategorized' },
     specifications: {
         type: [{

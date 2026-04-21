@@ -102,10 +102,10 @@ module.exports.retrieveSingleProduct = async (req, res) => {
     } catch (error) { errorHandler(error, req, res); }
 };
 
-// Update — supports name, description, price, stocks, category, options, configurations, kits
+// Update — supports name, description, price, stocks, category, options, configurations, kits, variant fields
 module.exports.updateProduct = async (req, res) => {
     try {
-        const allowed = ['name', 'description', 'price', 'stocks', 'category', 'options', 'configurations', 'configAvailabilityRules', 'kits', 'specifications'];
+        const allowed = ['name', 'description', 'price', 'stocks', 'category', 'options', 'configurations', 'configAvailabilityRules', 'kits', 'specifications', 'useVariants', 'variantDimensions', 'variants', 'variantImages'];
         const updateData = {};
         for (const field of allowed) {
             if (req.body[field] !== undefined) updateData[field] = req.body[field];
@@ -113,6 +113,148 @@ module.exports.updateProduct = async (req, res) => {
         const updated = await Product.findByIdAndUpdate(req.params.productId, updateData, { new: true, runValidators: true });
         if (!updated) return res.status(404).json({ error: 'Product not found.' });
         return res.status(200).json({ message: 'Product updated successfully.', product: updated });
+    } catch (error) { errorHandler(error, req, res); }
+};
+
+// ── Variant endpoints ─────────────────────────────────────────────────────────
+
+module.exports.importVariants = async (req, res) => {
+    try {
+        const { dimensions, variants, images, replace } = req.body;
+        const product = await Product.findById(req.params.productId);
+        if (!product) return res.status(404).json({ error: 'Product not found.' });
+
+        if (replace || !product.useVariants) {
+            product.variantDimensions = dimensions || [];
+            product.variants = [];
+            product.variantImages = images || [];
+            product.useVariants = true;
+        } else {
+            if (dimensions) product.variantDimensions = dimensions;
+        }
+
+        const toObj = v => v instanceof Map ? Object.fromEntries(v) : (v || {});
+        const eqAttrs = (a, b) => {
+            const ae = Object.entries(toObj(a));
+            const be = Object.entries(toObj(b));
+            if (ae.length !== be.length) return false;
+            return ae.every(([k, v]) => toObj(b)[k] === v);
+        };
+
+        for (const v of (variants || [])) {
+            const ex = product.variants.find(e => eqAttrs(e.attributes, v.attributes));
+            if (ex) {
+                if (v.stock !== undefined) ex.stock = v.stock;
+                if (v.price !== undefined) ex.price = v.price;
+                if (v.sku !== undefined) ex.sku = v.sku;
+                if (v.available !== undefined) ex.available = v.available;
+            } else {
+                product.variants.push(v);
+            }
+        }
+
+        if (replace && images) {
+            product.variantImages = images;
+        } else if (!replace && images) {
+            images.forEach(img => product.variantImages.push(img));
+        }
+
+        await product.save();
+        return res.status(200).json({ message: 'Variants imported.', product });
+    } catch (error) { errorHandler(error, req, res); }
+};
+
+module.exports.convertFromLegacy = async (req, res) => {
+    try {
+        const product = await Product.findById(req.params.productId);
+        if (!product) return res.status(404).json({ error: 'Product not found.' });
+        if (product.useVariants) return res.status(400).json({ error: 'Product already uses variants.' });
+        if (!product.configurations?.length) return res.status(400).json({ error: 'No configurations to convert.' });
+
+        const dims = product.configurations.map(c => ({
+            name: c.name,
+            values: c.options.map(o => o.value)
+        }));
+
+        const combos = dims.reduce((acc, d) =>
+            acc.flatMap(a => d.values.map(v => ({ ...a, [d.name]: v }))),
+            [{}]
+        );
+
+        const isRuleActive = (rule, attrs) => {
+            const conds = rule.conditions || (rule.configName ? [{ configName: rule.configName, selectedValue: rule.selectedValue }] : []);
+            return conds.length > 0 && conds.every(c => attrs[c.configName] === c.selectedValue);
+        };
+
+        const valid = combos.filter(attrs => {
+            for (const cfg of product.configurations) {
+                const activeRules = (product.configAvailabilityRules || []).filter(r =>
+                    r.targetConfigName === cfg.name && isRuleActive(r, attrs)
+                );
+                if (activeRules.length === 0) continue;
+                const allowed = new Set(activeRules.flatMap(r => r.availableValues || []));
+                if (!allowed.has(attrs[cfg.name])) return false;
+            }
+            return true;
+        });
+
+        const variants = valid.map(attrs => {
+            const trackedStocks = product.configurations
+                .map(cfg => {
+                    const opt = cfg.options.find(o => o.value === attrs[cfg.name]);
+                    return opt && opt.stocks >= 0 ? opt.stocks : null;
+                })
+                .filter(s => s !== null);
+            return {
+                attributes: attrs,
+                stock: trackedStocks.length ? Math.min(...trackedStocks) : -1,
+                price: null,
+                available: true,
+                sku: ''
+            };
+        });
+
+        product.variantDimensions = dims;
+        product.variants = variants;
+        product.variantImages = (product.images || []).map(img => ({
+            url: img.url, publicId: img.publicId || '', appliesTo: {}
+        }));
+        product.useVariants = true;
+        await product.save();
+
+        return res.status(200).json({ message: `Converted. ${variants.length} variants created.`, product });
+    } catch (error) { errorHandler(error, req, res); }
+};
+
+module.exports.uploadVariantImage = async (req, res) => {
+    try {
+        if (!req.uploadedImages?.length) return res.status(400).json({ error: 'No image uploaded.' });
+        const product = await Product.findById(req.params.productId);
+        if (!product) return res.status(404).json({ error: 'Product not found.' });
+        const appliesTo = req.body.appliesTo ? JSON.parse(req.body.appliesTo) : {};
+        req.uploadedImages.forEach(img => {
+            product.variantImages.push({ url: img.url, publicId: img.publicId || '', appliesTo });
+        });
+        await product.save();
+        return res.status(200).json({ message: 'Variant image added.', product });
+    } catch (error) { errorHandler(error, req, res); }
+};
+
+module.exports.deleteVariantImage = async (req, res) => {
+    try {
+        const { productId, imageId } = req.params;
+        const product = await Product.findById(productId);
+        if (!product) return res.status(404).json({ error: 'Product not found.' });
+        const idx = product.variantImages.findIndex(img => img._id.toString() === imageId);
+        if (idx === -1) return res.status(404).json({ error: 'Variant image not found.' });
+        const imgUrl = product.variantImages[idx].url;
+        const publicId = product.variantImages[idx].publicId;
+        if (publicId && imgUrl.includes('cloudinary.com')) {
+            try { await cloudinary.uploader.destroy(publicId); } catch (e) { console.error('Cloudinary delete error:', e); }
+        }
+        product.variantImages.splice(idx, 1);
+        await product.save();
+        return res.status(200).json({ message: 'Variant image deleted.', product });
     } catch (error) { errorHandler(error, req, res); }
 };
 

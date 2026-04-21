@@ -21,7 +21,10 @@ mongoose.connect(process.env.MONGODB_STRING)
     .catch((err) => console.error('MongoDB connection error:', err));
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
-app.use(express.json({ limit: '10mb' }));
+app.use(express.json({
+    limit: '10mb',
+    verify: (req, _res, buf) => { req.rawBody = buf; }
+}));
 app.use(express.urlencoded({ extended: true }));
 
 const corsOptions = {

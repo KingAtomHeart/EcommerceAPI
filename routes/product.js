@@ -18,6 +18,13 @@ const safeUpload = (req, res, next) => {
 
 // Admin Routes
 router.post('/', verify, verifyAdmin, safeUpload, processUploadedImages, productController.createProduct);
+
+// Variant management (static sub-paths before /:productId catch-alls)
+router.post('/:productId/variants/import', verify, verifyAdmin, productController.importVariants);
+router.post('/:productId/variants/convert-from-legacy', verify, verifyAdmin, productController.convertFromLegacy);
+router.post('/:productId/variants/image', verify, verifyAdmin, safeUpload, processUploadedImages, productController.uploadVariantImage);
+router.delete('/:productId/variants/image/:imageId', verify, verifyAdmin, productController.deleteVariantImage);
+
 router.post('/:productId/images', verify, verifyAdmin, safeUpload, processUploadedImages, productController.uploadProductImages);
 router.patch('/:productId/images/reorder', verify, verifyAdmin, productController.reorderProductImages);
 router.post('/:productId/images/add-url', verify, verifyAdmin, productController.addProductImageByUrl);

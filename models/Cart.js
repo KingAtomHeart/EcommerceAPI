@@ -21,6 +21,8 @@ const cartItemSchema = new mongoose.Schema({
         name: { type: String },
         selected: { type: String }
     }],
+    variantId: { type: mongoose.Schema.Types.ObjectId, default: null },
+    variantAttributes: { type: Map, of: String, default: {} },
     quantity: { type: Number, required: true, min: [1, 'Quantity must be at least 1'] },
     subtotal: { type: Number, required: true }
 });
