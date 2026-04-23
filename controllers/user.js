@@ -1,9 +1,11 @@
 const User = require('../models/User.js');
 const bcrypt = require('bcrypt');
 const auth = require('../auth.js');
+const { OAuth2Client } = require('google-auth-library');
 const { errorHandler } = auth;
 
 const EMAIL_REGEX = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const googleClient = process.env.GOOGLE_CLIENT_ID ? new OAuth2Client(process.env.GOOGLE_CLIENT_ID) : null;
 
 
 // ─── Register ────────────────────────────────────────────────────────────────
@@ -54,6 +56,9 @@ module.exports.loginUser = async (req, res) => {
             return res.status(404).json({ error: 'No account found with that email.' });
         }
 
+        if (!user.password) {
+            return res.status(401).json({ error: 'This account uses Google sign-in. Continue with Google.' });
+        }
         const isPasswordCorrect = await bcrypt.compare(password, user.password);
         if (!isPasswordCorrect) {
             return res.status(401).json({ error: 'Incorrect password.' });
@@ -64,6 +69,54 @@ module.exports.loginUser = async (req, res) => {
             access: auth.createAccessToken(user)
         });
     } catch (error) {
+        errorHandler(error, req, res);
+    }
+};
+
+
+// ─── Google Login ────────────────────────────────────────────────────────────
+module.exports.googleLogin = async (req, res) => {
+    try {
+        if (!googleClient) {
+            return res.status(500).json({ error: 'Google sign-in is not configured on the server.' });
+        }
+        const { credential } = req.body;
+        if (!credential) {
+            return res.status(400).json({ error: 'Missing Google credential.' });
+        }
+
+        const ticket = await googleClient.verifyIdToken({
+            idToken: credential,
+            audience: process.env.GOOGLE_CLIENT_ID,
+        });
+        const payload = ticket.getPayload();
+        if (!payload?.email || !payload.email_verified) {
+            return res.status(401).json({ error: 'Google account email is not verified.' });
+        }
+
+        const email = payload.email.toLowerCase();
+        const googleId = payload.sub;
+
+        let user = await User.findOne({ $or: [{ googleId }, { email }] });
+        if (user) {
+            if (!user.googleId) { user.googleId = googleId; await user.save(); }
+        } else {
+            user = await new User({
+                firstName: payload.given_name || 'User',
+                lastName: payload.family_name || '',
+                email,
+                googleId,
+            }).save();
+        }
+
+        return res.status(200).json({
+            message: 'Logged in successfully.',
+            access: auth.createAccessToken(user),
+        });
+    } catch (error) {
+        if (error.message?.includes('Token used too late') || error.message?.includes('Invalid token')) {
+            return res.status(401).json({ error: 'Invalid or expired Google token.' });
+        }
         errorHandler(error, req, res);
     }
 };
@@ -102,6 +155,26 @@ module.exports.updatePassword = async (req, res) => {
         await user.save();
 
         return res.status(200).json({ message: 'Password updated successfully.' });
+    } catch (error) {
+        errorHandler(error, req, res);
+    }
+};
+
+
+// ─── Update Mobile Number ────────────────────────────────────────────────────
+module.exports.updateMobile = async (req, res) => {
+    try {
+        const { mobileNo } = req.body;
+        if (!mobileNo || !/^\d{11}$/.test(mobileNo)) {
+            return res.status(400).json({ error: 'Mobile number must be exactly 11 digits.' });
+        }
+        const user = await User.findByIdAndUpdate(
+            req.user.id,
+            { mobileNo },
+            { new: true }
+        ).select('-password');
+        if (!user) return res.status(404).json({ error: 'User not found.' });
+        return res.status(200).json({ message: 'Mobile number updated.', user });
     } catch (error) {
         errorHandler(error, req, res);
     }
