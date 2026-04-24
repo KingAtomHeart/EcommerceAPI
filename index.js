@@ -49,6 +49,9 @@ app.use('/b1/contact', contactRoutes);
 // Health check
 app.get('/health', (req, res) => res.status(200).json({ status: 'OK' }));
 
+// ─── 404 — return JSON so clients never receive an HTML error page ────────────
+app.use((req, res) => res.status(404).json({ error: `Route not found: ${req.method} ${req.path}` }));
+
 // ─── Global Error Handler ─────────────────────────────────────────────────────
 app.use(errorHandler);
 
