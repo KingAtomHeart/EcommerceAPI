@@ -181,6 +181,101 @@ module.exports.updateMobile = async (req, res) => {
 };
 
 
+// ─── Profile Picture ─────────────────────────────────────────────────────────
+module.exports.updateProfilePicture = async (req, res) => {
+    try {
+        const { url } = req.body || {};
+        // Empty string allowed (clearing the avatar). Otherwise require a reasonable-looking URL.
+        if (url && typeof url !== 'string') return res.status(400).json({ error: 'Invalid image URL.' });
+        const user = await User.findByIdAndUpdate(
+            req.user.id,
+            { profilePicture: url || '' },
+            { new: true }
+        ).select('-password');
+        if (!user) return res.status(404).json({ error: 'User not found.' });
+        return res.status(200).json({ message: 'Profile picture updated.', user });
+    } catch (error) { errorHandler(error, req, res); }
+};
+
+
+// ─── Addresses ────────────────────────────────────────────────────────────────
+const validateAddr = (a) => a?.fullName && a?.phone && a?.street && a?.city && a?.province;
+
+module.exports.addAddress = async (req, res) => {
+    try {
+        const { address } = req.body || {};
+        if (!validateAddr(address)) return res.status(400).json({ error: 'Incomplete address.' });
+        const user = await User.findById(req.user.id);
+        if (!user) return res.status(404).json({ error: 'User not found.' });
+
+        const isFirst = !user.addresses || user.addresses.length === 0;
+        const wantsDefault = !!address.isDefault || isFirst;
+        if (wantsDefault) user.addresses.forEach(a => { a.isDefault = false; });
+
+        user.addresses.push({
+            fullName: address.fullName, phone: address.phone,
+            street: address.street, city: address.city,
+            province: address.province, postalCode: address.postalCode || '',
+            isDefault: wantsDefault,
+        });
+        await user.save();
+        return res.status(201).json({ addresses: user.addresses });
+    } catch (error) { errorHandler(error, req, res); }
+};
+
+module.exports.updateAddress = async (req, res) => {
+    try {
+        const { address } = req.body || {};
+        if (!validateAddr(address)) return res.status(400).json({ error: 'Incomplete address.' });
+        const user = await User.findById(req.user.id);
+        if (!user) return res.status(404).json({ error: 'User not found.' });
+        const target = user.addresses.id(req.params.addressId);
+        if (!target) return res.status(404).json({ error: 'Address not found.' });
+
+        if (address.isDefault) user.addresses.forEach(a => { a.isDefault = false; });
+        Object.assign(target, {
+            fullName: address.fullName, phone: address.phone,
+            street: address.street, city: address.city,
+            province: address.province, postalCode: address.postalCode || '',
+            isDefault: !!address.isDefault || target.isDefault,
+        });
+        // Ensure at least one default remains
+        if (!user.addresses.some(a => a.isDefault) && user.addresses.length > 0) {
+            user.addresses[0].isDefault = true;
+        }
+        await user.save();
+        return res.status(200).json({ addresses: user.addresses });
+    } catch (error) { errorHandler(error, req, res); }
+};
+
+module.exports.deleteAddress = async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user) return res.status(404).json({ error: 'User not found.' });
+        const target = user.addresses.id(req.params.addressId);
+        if (!target) return res.status(404).json({ error: 'Address not found.' });
+        const wasDefault = target.isDefault;
+        user.addresses.pull(req.params.addressId);
+        if (wasDefault && user.addresses.length > 0) user.addresses[0].isDefault = true;
+        await user.save();
+        return res.status(200).json({ addresses: user.addresses });
+    } catch (error) { errorHandler(error, req, res); }
+};
+
+module.exports.setDefaultAddress = async (req, res) => {
+    try {
+        const user = await User.findById(req.user.id);
+        if (!user) return res.status(404).json({ error: 'User not found.' });
+        const target = user.addresses.id(req.params.addressId);
+        if (!target) return res.status(404).json({ error: 'Address not found.' });
+        user.addresses.forEach(a => { a.isDefault = false; });
+        target.isDefault = true;
+        await user.save();
+        return res.status(200).json({ addresses: user.addresses });
+    } catch (error) { errorHandler(error, req, res); }
+};
+
+
 // ─── Set User as Admin (Admin only) ──────────────────────────────────────────
 module.exports.updateUserAsAdmin = async (req, res) => {
     try {

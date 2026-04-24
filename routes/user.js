@@ -9,6 +9,11 @@ router.post('/google-login', userController.googleLogin);
 router.get('/details', verify, userController.getProfile);
 router.patch('/update-password', verify, userController.updatePassword);
 router.patch('/update-mobile', verify, userController.updateMobile);
+router.patch('/update-profile-picture', verify, userController.updateProfilePicture);
+router.post('/addresses', verify, userController.addAddress);
+router.patch('/addresses/:addressId', verify, userController.updateAddress);
+router.delete('/addresses/:addressId', verify, userController.deleteAddress);
+router.patch('/addresses/:addressId/default', verify, userController.setDefaultAddress);
 router.patch('/:id/set-as-admin', verify, verifyAdmin, userController.updateUserAsAdmin);
 
 module.exports = router;

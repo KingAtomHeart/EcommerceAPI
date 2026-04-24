@@ -341,7 +341,7 @@ module.exports.addToCart = async (req, res) => {
 // ─── PATCH /cart/update-cart-quantity ────────────────────────────────────────
 module.exports.updateCartQuantity = async (req, res) => {
     try {
-        const { productId, kitId, optionValueId } = req.body;
+        const { productId, kitId, optionValueId, variantId } = req.body;
         const quantity = req.body.quantity || req.body.newQuantity;
 
         if (!productId || quantity == null || quantity < 1) {
@@ -385,9 +385,14 @@ module.exports.updateCartQuantity = async (req, res) => {
         const cart = await Cart.findOne({ userId: req.user.id });
         if (!cart) return res.status(404).json({ error: 'Cart not found.' });
 
-        // Find matching item (option, kit, or base)
+        // Find matching item (variant, option, kit, or base)
         let item;
-        if (optionValueId) {
+        if (variantId) {
+            item = cart.cartItems.find(i =>
+                i.productId.toString() === productId &&
+                i.variantId?.toString() === variantId
+            );
+        } else if (optionValueId) {
             item = cart.cartItems.find(i =>
                 i.productId.toString() === productId &&
                 i.selectedOption?.valueId?.toString() === optionValueId
@@ -395,7 +400,8 @@ module.exports.updateCartQuantity = async (req, res) => {
         } else {
             item = cart.cartItems.find(i =>
                 i.productId.toString() === productId &&
-                (i.kitId?.toString() || null) === (kitId || null)
+                (i.kitId?.toString() || null) === (kitId || null) &&
+                !i.variantId
             );
         }
         if (!item) return res.status(404).json({ error: 'Item not in cart.' });
@@ -418,7 +424,17 @@ module.exports.updateCartQuantity = async (req, res) => {
 
         // Recalculate unit price
         let unitPrice;
-        if (item.selectedOption?.groupId) {
+        if (item.variantId) {
+            const variant = product.variants?.id(item.variantId);
+            if (variant) {
+                if (variant.stock >= 0 && variant.stock < quantity) {
+                    return res.status(400).json({ error: `Only ${variant.stock} available for this variant.` });
+                }
+                unitPrice = variant.price != null ? variant.price : product.price;
+            } else {
+                unitPrice = product.price;
+            }
+        } else if (item.selectedOption?.groupId) {
             const group = product.options?.id(item.selectedOption.groupId);
             const val = group?.values?.id(item.selectedOption.valueId);
             unitPrice = val?.price || 0;
@@ -456,12 +472,13 @@ module.exports.updateCartQuantity = async (req, res) => {
 
 
 // ─── PATCH /cart/:productId/remove-from-cart ─────────────────────────────────
-// Query param ?kitId=xxx or ?optionValueId=xxx to target a specific item
+// Query params: ?variantId=xxx | ?kitId=xxx | ?optionValueId=xxx
 module.exports.removeFromCart = async (req, res) => {
     try {
         const { productId } = req.params;
         const kitId = req.query.kitId || null;
         const optionValueId = req.query.optionValueId || null;
+        const variantId = req.query.variantId || null;
 
         const cart = await Cart.findOne({ userId: req.user.id });
         if (!cart) return res.status(404).json({ error: 'Cart not found.' });
@@ -469,10 +486,11 @@ module.exports.removeFromCart = async (req, res) => {
         const initialLength = cart.cartItems.length;
         cart.cartItems = cart.cartItems.filter(item => {
             if (item.productId.toString() !== productId) return true;
+            if (variantId) return item.variantId?.toString() !== variantId;
             if (optionValueId) return item.selectedOption?.valueId?.toString() !== optionValueId;
             if (kitId) return item.kitId?.toString() !== kitId;
-            // Remove base product item (no kit, no option)
-            return item.kitId != null || item.selectedOption?.valueId != null;
+            // Plain item (no kit/option/variant): keep all variant/kit/option items, remove only base.
+            return item.kitId != null || item.selectedOption?.valueId != null || item.variantId != null;
         });
 
         if (cart.cartItems.length === initialLength) {

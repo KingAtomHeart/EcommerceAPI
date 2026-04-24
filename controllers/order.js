@@ -132,6 +132,7 @@ module.exports.createOrder = async (req, res) => {
                 productsOrdered.push({
                     productId: product._id,
                     productName: product.name + (attrStr ? ` (${attrStr})` : ''),
+                    productImage: product.images?.[0]?.url || '',
                     quantity: item.quantity,
                     subtotal,
                     variantId: item.variantId,
@@ -175,6 +176,7 @@ module.exports.createOrder = async (req, res) => {
             productsOrdered.push({
                 productId: product._id,
                 productName: product.name + optionLabel + (configStr ? ` (${configStr})` : ''),
+                productImage: product.images?.[0]?.url || '',
                 quantity: item.quantity,
                 subtotal,
                 selectedOption: item.selectedOption?.groupId ? {
@@ -187,7 +189,30 @@ module.exports.createOrder = async (req, res) => {
             });
         }
 
-        const order = new Order({ userId, productsOrdered, totalPrice });
+        // Shipping (design-phase: no PayMongo, just record on order)
+        const { computeShippingFromProvince } = require('../utils/shipping.js');
+        const { shippingAddress, billingAddress } = req.body || {};
+        let shippingFee = 0, shippingRegion = null;
+        if (shippingAddress?.province) {
+            if (!shippingAddress.fullName || !shippingAddress.phone || !shippingAddress.street || !shippingAddress.city) {
+                return res.status(400).json({ error: 'Please provide a complete shipping address.' });
+            }
+            const shipResult = computeShippingFromProvince(shippingAddress.province);
+            if (!shipResult.ok) return res.status(400).json({ error: shipResult.error });
+            shippingFee = shipResult.fee;
+            shippingRegion = shipResult.regionCode;
+        }
+        const grandTotal = totalPrice + shippingFee;
+
+        const order = new Order({
+            userId,
+            productsOrdered,
+            totalPrice: grandTotal,
+            shippingFee,
+            shippingRegion,
+            shippingAddress: shippingAddress || undefined,
+            billingAddress: (billingAddress && billingAddress.fullName) ? billingAddress : (shippingAddress || undefined),
+        });
         const savedOrder = await order.save();
 
         // Decrement stock for each product/option/config
@@ -250,7 +275,9 @@ module.exports.createOrder = async (req, res) => {
 // ─── Get My Orders (User) ────────────────────────────────────────────────────
 module.exports.retrieveUserOrders = async (req, res) => {
     try {
-        const orders = await Order.find({ userId: req.user.id }).sort({ createdAt: -1 });
+        const orders = await Order.find({ userId: req.user.id })
+            .populate('productsOrdered.productId', 'images')
+            .sort({ createdAt: -1 });
 
         if (orders.length === 0) {
             return res.status(200).json({ message: 'You have no orders yet.', orders: [] });
@@ -268,6 +295,7 @@ module.exports.retrieveAllOrders = async (req, res) => {
     try {
         const orders = await Order.find({})
             .populate('userId', 'firstName lastName email')
+            .populate('productsOrdered.productId', 'images')
             .sort({ createdAt: -1 });
 
         return res.status(200).json({ orders });
@@ -428,6 +456,7 @@ module.exports.createPaymentSession = async (req, res) => {
                 productsOrdered.push({
                     productId: product._id,
                     productName: product.name + (attrStr ? ` (${attrStr})` : ''),
+                    productImage: product.images?.[0]?.url || '',
                     quantity: item.quantity,
                     subtotal: vSubtotal,
                     variantId: item.variantId,
@@ -464,6 +493,7 @@ module.exports.createPaymentSession = async (req, res) => {
             productsOrdered.push({
                 productId: product._id,
                 productName: product.name + optionLabel + (configStr ? ` (${configStr})` : ''),
+                productImage: product.images?.[0]?.url || '',
                 quantity: item.quantity,
                 subtotal,
                 selectedOption: item.selectedOption?.groupId ? {
@@ -476,8 +506,28 @@ module.exports.createPaymentSession = async (req, res) => {
             });
         }
 
+        // Derive region + rate from the customer's province. Client can't choose the zone.
+        const { computeShippingFromProvince } = require('../utils/shipping.js');
+        const { shippingAddress, billingAddress } = req.body || {};
+        if (!shippingAddress?.fullName || !shippingAddress?.phone || !shippingAddress?.street || !shippingAddress?.city || !shippingAddress?.province) {
+            return res.status(400).json({ error: 'Please provide a complete shipping address.' });
+        }
+        const shipResult = computeShippingFromProvince(shippingAddress.province);
+        if (!shipResult.ok) return res.status(400).json({ error: shipResult.error });
+        const shippingFee = shipResult.fee;
+        const grandTotal = totalPrice + shippingFee;
+
         // Create order in awaiting_payment state (stock not decremented yet)
-        const order = new Order({ userId, productsOrdered, totalPrice, paymentStatus: 'awaiting_payment' });
+        const order = new Order({
+            userId,
+            productsOrdered,
+            totalPrice: grandTotal,
+            shippingFee,
+            shippingRegion: shipResult.regionCode,
+            shippingAddress,
+            billingAddress: (billingAddress && billingAddress.fullName) ? billingAddress : shippingAddress,
+            paymentStatus: 'awaiting_payment'
+        });
         await order.save();
 
         // Build PayMongo line items (amounts in centavos)
@@ -487,6 +537,12 @@ module.exports.createPaymentSession = async (req, res) => {
             name: p.productName,
             quantity: p.quantity
         }));
+        lineItems.push({
+            currency: 'PHP',
+            amount: Math.round(shippingFee * 100),
+            name: `Shipping — ${shipResult.regionLabel}`,
+            quantity: 1
+        });
 
         const clientUrl = process.env.CLIENT_URL || 'http://localhost:3000';
         const sessionRes = await paymongoRequest('POST', '/checkout_sessions', {
@@ -503,8 +559,11 @@ module.exports.createPaymentSession = async (req, res) => {
         });
 
         if (sessionRes.status !== 200 && sessionRes.status !== 201) {
+            console.error('[PayMongo] status=', sessionRes.status, 'body=', JSON.stringify(sessionRes.body));
+            console.error('[PayMongo] lineItems=', JSON.stringify(lineItems));
             await Order.findByIdAndDelete(order._id);
-            return res.status(500).json({ error: 'Failed to create payment session. Please try again.' });
+            const pmDetail = sessionRes.body?.errors?.[0]?.detail;
+            return res.status(500).json({ error: pmDetail ? `PayMongo: ${pmDetail}` : 'Failed to create payment session. Please try again.' });
         }
 
         const sessionId = sessionRes.body.data.id;

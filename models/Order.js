@@ -5,6 +5,7 @@ const orderSchema = new mongoose.Schema({
     productsOrdered: [{
         productId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', required: true },
         productName: { type: String },
+        productImage: { type: String, default: '' },
         quantity: { type: Number, required: true },
         subtotal: { type: Number, required: true },
         selectedOption: {
@@ -21,6 +22,20 @@ const orderSchema = new mongoose.Schema({
         variantAttributes: { type: Map, of: String, default: {} }
     }],
     totalPrice: { type: Number, required: true },
+    shippingFee: { type: Number, default: 0 },
+    shippingRegion: { type: String },
+    shippingAddress: {
+        fullName: { type: String },
+        phone: { type: String },
+        street: { type: String },
+        city: { type: String },
+        province: { type: String },
+        postalCode: { type: String }
+    },
+    billingAddress: {
+        fullName: String, phone: String,
+        street: String, city: String, province: String, postalCode: String
+    },
     status: {
         type: String,
         enum: ['Pending', 'Processing', 'Shipped', 'Delivered', 'Cancelled'],

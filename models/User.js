@@ -7,7 +7,13 @@ const userSchema = new mongoose.Schema({
     password: { type: String },
     googleId: { type: String, index: true, sparse: true },
     isAdmin: { type: Boolean, default: false },
-    mobileNo: { type: String, trim: true }
+    mobileNo: { type: String, trim: true },
+    profilePicture: { type: String, default: '' },
+    addresses: [{
+        fullName: String, phone: String,
+        street: String, city: String, province: String, postalCode: String,
+        isDefault: { type: Boolean, default: false }
+    }]
 }, { timestamps: true });
 
 module.exports = mongoose.model('User', userSchema);

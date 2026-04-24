@@ -381,10 +381,17 @@ module.exports.exportOrdersCSV = async (req, res) => {
         const orders = await GroupBuyOrder.find({ groupBuyId: req.params.id }).populate('userId', 'firstName lastName email mobileNo').sort({ createdAt: 1 });
         const configNames = gb.configurations.map(c => c.name);
         const kitNames = gb.kits.map(k => k.name);
-        const headers = ['Order Code', 'Date', 'Customer Name', 'Email', 'Phone', 'Selected Option', ...configNames, ...(kitNames.length > 0 ? kitNames.map(k => `Kit: ${k}`) : []), 'Quantity', 'Total Price', 'Status', 'Notes'];
+        const headers = [
+            'Order Code', 'Date', 'Customer Name', 'Email', 'Phone',
+            'Ship To Name', 'Ship To Phone', 'Street', 'City', 'Province', 'Postal Code',
+            'Selected Option', ...configNames,
+            ...(kitNames.length > 0 ? kitNames.map(k => `Kit: ${k}`) : []),
+            'Quantity', 'Total Price', 'Status', 'Notes'
+        ];
         const esc = (v) => { const s = String(v ?? ''); return (s.includes(',') || s.includes('"') || s.includes('\n')) ? `"${s.replace(/"/g, '""')}"` : s; };
         const rows = orders.map(o => {
             const u = o.userId;
+            const addr = o.shippingAddress || {};
             const selectedOptionVal = o.selectedOption?.value
                 ? `${o.selectedOption.groupName}: ${o.selectedOption.value}`
                 : '';
@@ -393,10 +400,15 @@ module.exports.exportOrdersCSV = async (req, res) => {
                 const k = o.kits?.find(ok => ok.name === kn);
                 return k ? `${k.quantity}x (₱${k.price})` : '';
             });
-            return [o.orderCode, new Date(o.createdAt).toLocaleDateString(),
+            return [
+                o.orderCode, new Date(o.createdAt).toLocaleDateString(),
                 typeof u === 'object' ? `${u.firstName} ${u.lastName}` : 'Unknown',
                 typeof u === 'object' ? u.email : '', typeof u === 'object' ? u.mobileNo : '',
-                selectedOptionVal, ...configValues, ...kitValues, o.quantity, o.totalPrice, o.status, o.notes || ''];
+                addr.fullName || '', addr.phone || '',
+                addr.street || '', addr.city || '', addr.province || '', addr.zipCode || '',
+                selectedOptionVal, ...configValues, ...kitValues,
+                o.quantity, o.totalPrice, o.status, o.notes || ''
+            ];
         });
         const csv = [headers.map(esc).join(','), ...rows.map(r => r.map(esc).join(','))].join('\n');
         res.setHeader('Content-Type', 'text/csv');
