@@ -96,13 +96,16 @@ module.exports.addToCart = async (req, res) => {
         if (!product) return res.status(404).json({ error: 'Product not found.' });
         if (!product.isActive) return res.status(400).json({ error: 'Product is no longer available.' });
 
-        // Block if cart currently has group buy items
+        // Block if cart actually has group buy items (don't trust stale cartType)
         const existingCart = await Cart.findOne({ userId: req.user.id });
-        if (existingCart && existingCart.cartItems.length > 0 && existingCart.cartType === 'groupbuy') {
+        const hasGroupBuyItems = existingCart?.cartItems?.some(i => i.groupBuyId) || false;
+        if (hasGroupBuyItems) {
             return res.status(400).json({
                 error: 'Your cart contains group buy items. Please clear your cart or checkout first before adding regular items.'
             });
         }
+        // Normalize cartType — if no group buy items remain, this is a regular cart
+        if (existingCart && existingCart.cartType !== 'regular') existingCart.cartType = 'regular';
 
         // ── Variant-based purchase ──
         if (product.useVariants) {
@@ -341,7 +344,7 @@ module.exports.addToCart = async (req, res) => {
 // ─── PATCH /cart/update-cart-quantity ────────────────────────────────────────
 module.exports.updateCartQuantity = async (req, res) => {
     try {
-        const { productId, kitId, optionValueId, variantId } = req.body;
+        const { productId, kitId, optionValueId, variantId, itemId } = req.body;
         const quantity = req.body.quantity || req.body.newQuantity;
 
         if (!productId || quantity == null || quantity < 1) {
@@ -350,10 +353,10 @@ module.exports.updateCartQuantity = async (req, res) => {
 
         // If this is a group buy cart, validate against group buy stock
         const cartCheck = await Cart.findOne({ userId: req.user.id });
-        if (cartCheck?.cartType === 'groupbuy') {
-            const item = cartCheck.cartItems.find(i =>
-                i.productId.toString() === productId
-            );
+        if (cartCheck?.cartItems?.some(i => i.groupBuyId)) {
+            const item = itemId
+                ? cartCheck.cartItems.find(i => i._id.toString() === itemId)
+                : cartCheck.cartItems.find(i => i.productId.toString() === productId);
             if (item?.groupBuyId) {
                 const gb = await GroupBuy.findById(item.groupBuyId);
                 if (gb && item.selectedOption?.valueId) {
@@ -385,9 +388,11 @@ module.exports.updateCartQuantity = async (req, res) => {
         const cart = await Cart.findOne({ userId: req.user.id });
         if (!cart) return res.status(404).json({ error: 'Cart not found.' });
 
-        // Find matching item (variant, option, kit, or base)
+        // Find matching item (preferred: by cart item _id; legacy: by variant/option/kit)
         let item;
-        if (variantId) {
+        if (itemId) {
+            item = cart.cartItems.find(i => i._id.toString() === itemId);
+        } else if (variantId) {
             item = cart.cartItems.find(i =>
                 i.productId.toString() === productId &&
                 i.variantId?.toString() === variantId
@@ -472,10 +477,12 @@ module.exports.updateCartQuantity = async (req, res) => {
 
 
 // ─── PATCH /cart/:productId/remove-from-cart ─────────────────────────────────
-// Query params: ?variantId=xxx | ?kitId=xxx | ?optionValueId=xxx
+// Query params: ?itemId=xxx (preferred — cart item's own _id, removes exactly one row)
+// Legacy: ?variantId=xxx | ?kitId=xxx | ?optionValueId=xxx
 module.exports.removeFromCart = async (req, res) => {
     try {
         const { productId } = req.params;
+        const itemId = req.query.itemId || null;
         const kitId = req.query.kitId || null;
         const optionValueId = req.query.optionValueId || null;
         const variantId = req.query.variantId || null;
@@ -484,20 +491,27 @@ module.exports.removeFromCart = async (req, res) => {
         if (!cart) return res.status(404).json({ error: 'Cart not found.' });
 
         const initialLength = cart.cartItems.length;
-        cart.cartItems = cart.cartItems.filter(item => {
-            if (item.productId.toString() !== productId) return true;
-            if (variantId) return item.variantId?.toString() !== variantId;
-            if (optionValueId) return item.selectedOption?.valueId?.toString() !== optionValueId;
-            if (kitId) return item.kitId?.toString() !== kitId;
-            // Plain item (no kit/option/variant): keep all variant/kit/option items, remove only base.
-            return item.kitId != null || item.selectedOption?.valueId != null || item.variantId != null;
-        });
+
+        if (itemId) {
+            // Precise removal — match the cart item's own _id, no ambiguity
+            cart.cartItems = cart.cartItems.filter(item => item._id.toString() !== itemId);
+        } else {
+            // Legacy fallback (may be ambiguous when same product has multiple config-only rows)
+            cart.cartItems = cart.cartItems.filter(item => {
+                if (item.productId.toString() !== productId) return true;
+                if (variantId) return item.variantId?.toString() !== variantId;
+                if (optionValueId) return item.selectedOption?.valueId?.toString() !== optionValueId;
+                if (kitId) return item.kitId?.toString() !== kitId;
+                return item.kitId != null || item.selectedOption?.valueId != null || item.variantId != null;
+            });
+        }
 
         if (cart.cartItems.length === initialLength) {
             return res.status(404).json({ error: 'Item not found in cart.' });
         }
 
         cart.totalPrice = recalcTotal(cart.cartItems);
+        if (cart.cartItems.length === 0) cart.cartType = 'regular';
         await cart.save();
 
         return res.status(200).json({ message: 'Item removed from cart.', cart });
@@ -515,6 +529,7 @@ module.exports.clearCart = async (req, res) => {
 
         cart.cartItems = [];
         cart.totalPrice = 0;
+        cart.cartType = 'regular';
         await cart.save();
 
         return res.status(200).json({ message: 'Cart cleared.' });
@@ -599,7 +614,8 @@ module.exports.addGroupBuyToCart = async (req, res) => {
         // Check if user has an existing cart
         let cart = await Cart.findOne({ userId: req.user.id });
 
-        if (cart && cart.cartItems.length > 0 && cart.cartType !== 'groupbuy') {
+        const hasRegularItems = cart?.cartItems?.some(i => !i.groupBuyId) || false;
+        if (hasRegularItems) {
             return res.status(400).json({
                 error: 'Your cart contains regular items. Please clear your cart or checkout first before adding group buy items.'
             });
