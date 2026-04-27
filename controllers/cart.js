@@ -621,6 +621,22 @@ module.exports.addGroupBuyToCart = async (req, res) => {
             });
         }
 
+        // Enforce single GB family: cart may only contain one parent + its add-ons
+        if (cart?.cartItems?.length > 0) {
+            const incomingRoot = gb.parentGroupBuyId?.toString() || gb._id.toString();
+            for (const existing of cart.cartItems) {
+                if (!existing.groupBuyId) continue;
+                const existingGb = await GroupBuy.findById(existing.groupBuyId).select('parentGroupBuyId');
+                if (!existingGb) continue;
+                const existingRoot = existingGb.parentGroupBuyId?.toString() || existingGb._id.toString();
+                if (existingRoot !== incomingRoot) {
+                    return res.status(400).json({
+                        error: 'You can only order one group buy and its add-ons at a time. Please clear your cart or checkout first.'
+                    });
+                }
+            }
+        }
+
         if (!cart) {
             cart = new Cart({
                 userId: req.user.id,

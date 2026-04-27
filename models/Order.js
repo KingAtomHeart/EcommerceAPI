@@ -19,7 +19,13 @@ const orderSchema = new mongoose.Schema({
             selected: { type: String }
         }],
         variantId: { type: mongoose.Schema.Types.ObjectId, default: null },
-        variantAttributes: { type: Map, of: String, default: {} }
+        variantAttributes: { type: Map, of: String, default: {} },
+        status: {
+            type: String,
+            enum: ['Pending', 'Processing', 'Shipped', 'Delivered', 'Cancelled'],
+            default: 'Pending'
+        },
+        addedAfterPurchase: { type: Boolean, default: false }
     }],
     totalPrice: { type: Number, required: true },
     shippingFee: { type: Number, default: 0 },

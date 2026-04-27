@@ -21,8 +21,17 @@ const generateOrderCode = async () => {
 
 module.exports.createGroupBuy = async (req, res) => {
     try {
-        const { name, description, basePrice, options, configurations, kits, moq, maxOrders, startDate, endDate, category, status, availabilityRules } = req.body;
+        const { name, description, basePrice, options, configurations, kits, moq, maxOrders, startDate, endDate, category, status, availabilityRules, parentGroupBuyId } = req.body;
         if (!name || basePrice == null) return res.status(400).json({ error: 'name and basePrice are required.' });
+
+        let resolvedParentId = null;
+        if (parentGroupBuyId) {
+            const parent = await GroupBuy.findById(parentGroupBuyId).select('parentGroupBuyId');
+            if (!parent) return res.status(404).json({ error: 'Parent group buy not found.' });
+            if (parent.parentGroupBuyId) return res.status(400).json({ error: 'Cannot nest add-ons. The selected parent is already an add-on.' });
+            resolvedParentId = parent._id;
+        }
+
         let images = [];
         if (req.uploadedImages && req.uploadedImages.length > 0) images = req.uploadedImages;
         const gb = new GroupBuy({
@@ -31,7 +40,8 @@ module.exports.createGroupBuy = async (req, res) => {
             moq: moq || 0, maxOrders: maxOrders || 0,
             startDate: startDate || null, endDate: endDate || null,
             category: category || 'keyboards', status: status || 'interest-check',
-            availabilityRules: availabilityRules || []
+            availabilityRules: availabilityRules || [],
+            parentGroupBuyId: resolvedParentId
         });
         const saved = await gb.save();
         return res.status(201).json(saved);
@@ -43,6 +53,19 @@ module.exports.updateGroupBuy = async (req, res) => {
         const allowedFields = ['name', 'description', 'basePrice', 'options', 'configurations', 'kits', 'moq', 'maxOrders', 'startDate', 'endDate', 'category', 'availabilityRules'];
         const updateData = {};
         for (const field of allowedFields) { if (req.body[field] !== undefined) updateData[field] = req.body[field]; }
+
+        if (req.body.parentGroupBuyId !== undefined) {
+            if (req.body.parentGroupBuyId) {
+                const parent = await GroupBuy.findById(req.body.parentGroupBuyId).select('parentGroupBuyId');
+                if (!parent) return res.status(404).json({ error: 'Parent group buy not found.' });
+                if (parent.parentGroupBuyId) return res.status(400).json({ error: 'Cannot nest add-ons. The selected parent is already an add-on.' });
+                if (parent._id.toString() === req.params.id) return res.status(400).json({ error: 'A group buy cannot be its own parent.' });
+                updateData.parentGroupBuyId = parent._id;
+            } else {
+                updateData.parentGroupBuyId = null;
+            }
+        }
+
         const updated = await GroupBuy.findByIdAndUpdate(req.params.id, updateData, { new: true, runValidators: true });
         if (!updated) return res.status(404).json({ error: 'Group buy not found.' });
         return res.status(200).json({ message: 'Updated.', groupBuy: updated });
@@ -147,13 +170,25 @@ module.exports.addImageByUrl = async (req, res) => {
 };
 
 module.exports.getAllGroupBuys = async (req, res) => {
-    try { return res.status(200).json(await GroupBuy.find({}).sort({ createdAt: -1 })); }
-    catch (error) { errorHandler(error, req, res); }
+    try {
+        const gbs = await GroupBuy.find({}).sort({ createdAt: -1 });
+        const result = await Promise.all(gbs.map(async gb => {
+            const addOns = await GroupBuy.find({ parentGroupBuyId: gb._id }).select('name basePrice options images status isActive parentGroupBuyId category orderCount');
+            return { ...gb.toObject(), addOns };
+        }));
+        return res.status(200).json(result);
+    } catch (error) { errorHandler(error, req, res); }
 };
 
 module.exports.getActiveGroupBuys = async (req, res) => {
     try {
-        return res.status(200).json(await GroupBuy.find({ isActive: true }).select('name description basePrice options images status category orderCount endDate moq maxOrders isActive').sort({ createdAt: -1 }));
+        const includeAddOns = req.query.includeAddOns === 'true';
+        const filter = includeAddOns ? { isActive: true } : { isActive: true, parentGroupBuyId: null };
+        return res.status(200).json(
+            await GroupBuy.find(filter)
+                .select('name description basePrice options images status category orderCount endDate moq maxOrders isActive parentGroupBuyId')
+                .sort({ createdAt: -1 })
+        );
     } catch (error) { errorHandler(error, req, res); }
 };
 
@@ -161,7 +196,18 @@ module.exports.getGroupBuy = async (req, res) => {
     try {
         const gb = await GroupBuy.findById(req.params.id).select('-interestChecks');
         if (!gb) return res.status(404).json({ error: 'Group buy not found.' });
-        return res.status(200).json(gb);
+        const gbObj = gb.toObject();
+        // Include parent info for add-ons
+        if (gb.parentGroupBuyId) {
+            const parent = await GroupBuy.findById(gb.parentGroupBuyId).select('name _id');
+            gbObj.parent = parent ? { _id: parent._id, name: parent.name } : null;
+        }
+        // Include active add-ons for parent GBs
+        if (!gb.parentGroupBuyId) {
+            gbObj.addOns = await GroupBuy.find({ parentGroupBuyId: gb._id, isActive: true })
+                .select('name description basePrice options configurations images status orderCount category endDate moq maxOrders isActive parentGroupBuyId');
+        }
+        return res.status(200).json(gbObj);
     } catch (error) { errorHandler(error, req, res); }
 };
 
@@ -335,8 +381,73 @@ module.exports.getMyOrders = async (req, res) => {
 
 module.exports.getGroupBuyOrders = async (req, res) => {
     try {
-        const orders = await GroupBuyOrder.find({ groupBuyId: req.params.id }).populate('userId', 'firstName lastName email mobileNo').sort({ createdAt: -1 });
+        const gb = await GroupBuy.findById(req.params.id).select('parentGroupBuyId');
+        if (!gb) return res.status(404).json({ error: 'Group buy not found.' });
+        // For parent GBs, include orders from child add-ons too
+        const gbIds = [gb._id];
+        if (!gb.parentGroupBuyId) {
+            const addOns = await GroupBuy.find({ parentGroupBuyId: gb._id }).select('_id');
+            gbIds.push(...addOns.map(a => a._id));
+        }
+        const orders = await GroupBuyOrder.find({ groupBuyId: { $in: gbIds } })
+            .populate('userId', 'firstName lastName email mobileNo')
+            .populate('groupBuyId', 'name parentGroupBuyId images')
+            .sort({ createdAt: -1 });
         return res.status(200).json({ orders });
+    } catch (error) { errorHandler(error, req, res); }
+};
+
+// Admin: add a new item to an existing cart order (case-by-case basis)
+module.exports.addItemToCartOrder = async (req, res) => {
+    try {
+        const { groupBuyId, userId, cartOrderCode, cartCheckoutId, shippingAddress, quantity = 1, configurations = [], optionGroupId, optionValueId } = req.body;
+        if (!groupBuyId || !userId || !cartOrderCode) return res.status(400).json({ error: 'groupBuyId, userId, and cartOrderCode are required.' });
+
+        const gb = await GroupBuy.findById(groupBuyId);
+        if (!gb) return res.status(404).json({ error: 'Group buy not found.' });
+
+        let totalPrice = 0;
+        let selectedOption;
+        if (optionGroupId && optionValueId && gb.options?.length > 0) {
+            const grp = gb.options.id(optionGroupId);
+            const val = grp?.values?.id(optionValueId);
+            if (!val) return res.status(400).json({ error: 'Invalid option.' });
+            if (val.stocks >= 0 && val.stocks < quantity) return res.status(400).json({ error: `Only ${val.stocks} in stock.` });
+            selectedOption = { groupName: grp.name, value: val.value, price: val.price };
+            totalPrice = val.price * quantity;
+        } else {
+            totalPrice = (gb.basePrice || 0) * quantity;
+        }
+        for (const c of configurations) {
+            const cfgDef = gb.configurations.find(d => d.name === c.name);
+            const opt = cfgDef?.options?.find(o => o.value === c.selected);
+            if (opt?.priceModifier > 0) totalPrice += opt.priceModifier * quantity;
+        }
+
+        const orderCode = await generateOrderCode();
+        const order = new GroupBuyOrder({
+            orderCode, cartOrderCode, cartCheckoutId: cartCheckoutId || null,
+            groupBuyId: gb._id, userId,
+            selectedOption, configurations,
+            quantity, totalPrice,
+            shippingAddress: shippingAddress || {},
+            notes: ''
+        });
+        await order.save();
+
+        // Decrement stock
+        if (optionGroupId && optionValueId) {
+            const grp = gb.options.id(optionGroupId);
+            const val = grp?.values?.id(optionValueId);
+            if (val && val.stocks >= 0) {
+                val.stocks = Math.max(0, val.stocks - quantity);
+                if (val.stocks === 0) val.available = false;
+            }
+        }
+        gb.orderCount += 1;
+        await gb.save();
+
+        return res.status(201).json({ message: 'Item added to order.', order });
     } catch (error) { errorHandler(error, req, res); }
 };
 
@@ -373,43 +484,131 @@ module.exports.updateOrderStatus = async (req, res) => {
     } catch (error) { errorHandler(error, req, res); }
 };
 
-// CSV: includes both configs and kits
+// CSV: one row per CART ORDER (parent + its add-ons combined into a single row).
+// Add-ons appear in an "Add-ons" column as a compiled string. Standalone parent
+// orders without add-ons still produce a single row each.
+// Query ?scope=addons exports only add-on items (one row per add-on, useful for
+// production planning of add-on items).
 module.exports.exportOrdersCSV = async (req, res) => {
     try {
         const gb = await GroupBuy.findById(req.params.id);
         if (!gb) return res.status(404).json({ error: 'Group buy not found.' });
-        const orders = await GroupBuyOrder.find({ groupBuyId: req.params.id }).populate('userId', 'firstName lastName email mobileNo').sort({ createdAt: 1 });
-        const configNames = gb.configurations.map(c => c.name);
-        const kitNames = gb.kits.map(k => k.name);
-        const headers = [
-            'Order Code', 'Date', 'Customer Name', 'Email', 'Phone',
-            'Ship To Name', 'Ship To Phone', 'Street', 'City', 'Province', 'Postal Code',
-            'Selected Option', ...configNames,
-            ...(kitNames.length > 0 ? kitNames.map(k => `Kit: ${k}`) : []),
-            'Quantity', 'Total Price', 'Status', 'Notes'
-        ];
+        if (gb.parentGroupBuyId) return res.status(400).json({ error: 'Export from the parent group buy instead.' });
+
+        const scope = req.query.scope; // 'addons' = add-on items only
+        const addOns = await GroupBuy.find({ parentGroupBuyId: gb._id });
+        const gbsInFamily = [gb, ...addOns];
+        const gbIds = gbsInFamily.map(g => g._id);
+
+        const orders = await GroupBuyOrder.find({ groupBuyId: { $in: gbIds } })
+            .populate('userId', 'firstName lastName email mobileNo')
+            .populate('groupBuyId', 'name parentGroupBuyId')
+            .sort({ cartOrderCode: 1, createdAt: 1 });
+
         const esc = (v) => { const s = String(v ?? ''); return (s.includes(',') || s.includes('"') || s.includes('\n')) ? `"${s.replace(/"/g, '""')}"` : s; };
-        const rows = orders.map(o => {
-            const u = o.userId;
-            const addr = o.shippingAddress || {};
-            const selectedOptionVal = o.selectedOption?.value
-                ? `${o.selectedOption.groupName}: ${o.selectedOption.value}`
+
+        // ── Add-ons-only scope: one row per add-on item ──
+        if (scope === 'addons') {
+            if (addOns.length === 0) return res.status(400).json({ error: 'No add-ons exist for this group buy.' });
+            const addonOrders = orders.filter(o => o.groupBuyId?.parentGroupBuyId);
+            const headers = [
+                'Cart Order Code', 'Item Order Code', 'Add-on', 'Added After Purchase', 'Date',
+                'Customer Name', 'Email', 'Phone',
+                'Ship To Name', 'Ship To Phone', 'Street', 'City', 'Province', 'Postal Code',
+                'Selected Option', 'Configurations', 'Quantity', 'Item Price', 'Status', 'Notes'
+            ];
+            const rows = addonOrders.map(o => {
+                const u = o.userId;
+                const addr = o.shippingAddress || {};
+                const selectedOptionVal = o.selectedOption?.value ? `${o.selectedOption.groupName}: ${o.selectedOption.value}` : '';
+                const configStr = (o.configurations || []).map(c => `${c.name}: ${c.selected}`).join('; ');
+                return [
+                    o.cartOrderCode || o.orderCode, o.orderCode,
+                    o.groupBuyId?.name || '', o.addedAfterPurchase ? 'Yes' : '',
+                    new Date(o.createdAt).toLocaleDateString(),
+                    typeof u === 'object' ? `${u.firstName} ${u.lastName}` : 'Unknown',
+                    typeof u === 'object' ? u.email : '', typeof u === 'object' ? u.mobileNo : '',
+                    addr.fullName || '', addr.phone || '',
+                    addr.street || '', addr.city || '', addr.province || '', addr.zipCode || '',
+                    selectedOptionVal, configStr, o.quantity, o.totalPrice, o.status, o.notes || ''
+                ];
+            });
+            const csv = [headers.map(esc).join(','), ...rows.map(r => r.map(esc).join(','))].join('\n');
+            res.setHeader('Content-Type', 'text/csv');
+            res.setHeader('Content-Disposition', `attachment; filename="${gb.name.replace(/[^a-zA-Z0-9]/g, '_')}_addons_orders.csv"`);
+            return res.status(200).send(csv);
+        }
+
+        // ── Default scope: one row per CART ORDER ──
+        // Group orders by cartOrderCode (or _id for legacy orders without one)
+        const cartGroups = new Map();
+        for (const o of orders) {
+            const key = o.cartOrderCode || `solo-${o._id}`;
+            if (!cartGroups.has(key)) cartGroups.set(key, []);
+            cartGroups.get(key).push(o);
+        }
+
+        const configNames = (gb.configurations || []).map(c => c.name);
+        const kitNames = (gb.kits || []).map(k => k.name);
+        const headers = [
+            'Cart Order Code', 'Date',
+            'Customer Name', 'Email', 'Phone',
+            'Ship To Name', 'Ship To Phone', 'Street', 'City', 'Province', 'Postal Code',
+            'Main Item', 'Selected Option', ...configNames,
+            ...(kitNames.length > 0 ? kitNames.map(k => `Kit: ${k}`) : []),
+            'Main Quantity', 'Main Price',
+            'Add-ons', 'Add-ons Total',
+            'Total Price', 'Status', 'Notes'
+        ];
+
+        const rows = [];
+        for (const [, items] of cartGroups) {
+            // Find parent order in this cart (the one whose GB has no parent). If none,
+            // use the first order as primary (legacy / standalone add-on edge case).
+            const main = items.find(i => !i.groupBuyId?.parentGroupBuyId) || items[0];
+            const addonsInCart = items.filter(i => i !== main);
+
+            const u = main.userId;
+            const addr = main.shippingAddress || {};
+            const selectedOptionVal = main.selectedOption?.value
+                ? `${main.selectedOption.groupName}: ${main.selectedOption.value}`
                 : '';
-            const configValues = configNames.map(cn => o.configurations?.find(c => c.name === cn)?.selected || '');
+            const configValues = configNames.map(cn => main.configurations?.find(c => c.name === cn)?.selected || '');
             const kitValues = kitNames.map(kn => {
-                const k = o.kits?.find(ok => ok.name === kn);
+                const k = main.kits?.find(ok => ok.name === kn);
                 return k ? `${k.quantity}x (₱${k.price})` : '';
             });
-            return [
-                o.orderCode, new Date(o.createdAt).toLocaleDateString(),
+
+            const addonStr = addonsInCart.map(a => {
+                const opt = a.selectedOption?.value ? ` (${a.selectedOption.value})` : '';
+                const cfg = (a.configurations || []).length > 0
+                    ? ` [${a.configurations.map(c => `${c.name}=${c.selected}`).join(', ')}]`
+                    : '';
+                const stat = a.status && a.status !== main.status ? ` <${a.status}>` : '';
+                const added = a.addedAfterPurchase ? ' [ADDED]' : '';
+                return `${a.groupBuyId?.name || 'Add-on'}${added}${opt}${cfg} × ${a.quantity} @ ₱${a.totalPrice?.toLocaleString()}${stat}`;
+            }).join(' | ');
+            const addonsTotal = addonsInCart.reduce((s, a) => s + (a.totalPrice || 0), 0);
+            const cartTotal = items.reduce((s, i) => s + (i.totalPrice || 0), 0);
+            const allSameStatus = items.every(i => i.status === items[0].status);
+            const cartStatus = allSameStatus ? items[0].status : 'Mixed';
+            const allNotes = items.filter(i => i.notes?.trim()).map(i => `${i.groupBuyId?.name || ''}: ${i.notes}`).join(' | ');
+
+            rows.push([
+                main.cartOrderCode || main.orderCode,
+                new Date(main.createdAt).toLocaleDateString(),
                 typeof u === 'object' ? `${u.firstName} ${u.lastName}` : 'Unknown',
                 typeof u === 'object' ? u.email : '', typeof u === 'object' ? u.mobileNo : '',
                 addr.fullName || '', addr.phone || '',
                 addr.street || '', addr.city || '', addr.province || '', addr.zipCode || '',
+                main.groupBuyId?.name || '',
                 selectedOptionVal, ...configValues, ...kitValues,
-                o.quantity, o.totalPrice, o.status, o.notes || ''
-            ];
-        });
+                main.quantity, main.totalPrice,
+                addonStr, addonsTotal,
+                cartTotal, cartStatus, allNotes
+            ]);
+        }
+
         const csv = [headers.map(esc).join(','), ...rows.map(r => r.map(esc).join(','))].join('\n');
         res.setHeader('Content-Type', 'text/csv');
         res.setHeader('Content-Disposition', `attachment; filename="${gb.name.replace(/[^a-zA-Z0-9]/g, '_')}_orders.csv"`);

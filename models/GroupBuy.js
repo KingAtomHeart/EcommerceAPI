@@ -95,7 +95,8 @@ const groupBuySchema = new mongoose.Schema({
     endDate: { type: Date },
     orderCount: { type: Number, default: 0 },
     category: { type: String, trim: true, default: 'keyboards' },
-    isActive: { type: Boolean, default: true }
+    isActive: { type: Boolean, default: true },
+    parentGroupBuyId: { type: mongoose.Schema.Types.ObjectId, ref: 'GroupBuy', default: null }
 }, { timestamps: true });
 
 module.exports = mongoose.model('GroupBuy', groupBuySchema);

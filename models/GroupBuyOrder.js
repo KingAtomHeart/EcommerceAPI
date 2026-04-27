@@ -2,6 +2,8 @@ const mongoose = require('mongoose');
 
 const groupBuyOrderSchema = new mongoose.Schema({
     orderCode: { type: String, required: true, unique: true },
+    cartOrderCode: { type: String, index: true, default: null },
+    cartCheckoutId: { type: String, index: true, default: null },
     groupBuyId: { type: mongoose.Schema.Types.ObjectId, ref: 'GroupBuy', required: true },
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     configurations: [{
@@ -34,7 +36,8 @@ const groupBuyOrderSchema = new mongoose.Schema({
         enum: ['Confirmed', 'In Production', 'Shipped', 'Delivered', 'Cancelled'],
         default: 'Confirmed'
     },
-    notes: { type: String, trim: true, default: '' }
+    notes: { type: String, trim: true, default: '' },
+    addedAfterPurchase: { type: Boolean, default: false }
 }, { timestamps: true });
 
 module.exports = mongoose.model('GroupBuyOrder', groupBuyOrderSchema);

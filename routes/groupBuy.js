@@ -23,6 +23,7 @@ router.get('/all', verify, verifyAdmin, gb.getAllGroupBuys);
 // FIX: create uses JSON, images uploaded separately via /:id/images
 router.post('/create', verify, verifyAdmin, gb.createGroupBuy);
 router.patch('/orders/:orderId/status', verify, verifyAdmin, gb.updateOrderStatus);
+router.post('/orders/add-to-cart-order', verify, verifyAdmin, gb.addItemToCartOrder);
 
 // ── Parameterized /:id paths ──
 router.get('/:id', gb.getGroupBuy);
