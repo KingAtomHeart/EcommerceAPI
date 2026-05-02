@@ -172,9 +172,16 @@ module.exports.addImageByUrl = async (req, res) => {
 module.exports.getAllGroupBuys = async (req, res) => {
     try {
         const gbs = await GroupBuy.find({}).sort({ createdAt: -1 });
+        const ids = gbs.map(g => g._id);
+        const uniqueCounts = await GroupBuyOrder.aggregate([
+            { $match: { groupBuyId: { $in: ids } } },
+            { $group: { _id: { gb: '$groupBuyId', key: { $ifNull: ['$cartCheckoutId', { $toString: '$_id' }] } } } },
+            { $group: { _id: '$_id.gb', count: { $sum: 1 } } }
+        ]);
+        const countMap = new Map(uniqueCounts.map(c => [String(c._id), c.count]));
         const result = await Promise.all(gbs.map(async gb => {
             const addOns = await GroupBuy.find({ parentGroupBuyId: gb._id }).select('name basePrice options images status isActive parentGroupBuyId category orderCount');
-            return { ...gb.toObject(), addOns };
+            return { ...gb.toObject(), addOns, uniqueOrderCount: countMap.get(String(gb._id)) || 0 };
         }));
         return res.status(200).json(result);
     } catch (error) { errorHandler(error, req, res); }
