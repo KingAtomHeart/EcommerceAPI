@@ -110,6 +110,7 @@ const productSchema = new mongoose.Schema({
         }],
         default: []
     },
+    parentProductId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', default: null, index: true },
     isActive: { type: Boolean, default: true }
 }, { timestamps: true });
 

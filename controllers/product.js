@@ -4,17 +4,14 @@ const cloudinary = require('cloudinary').v2;
 
 module.exports.createProduct = async (req, res) => {
     try {
-        const { name, description, price, stocks, category } = req.body;
+        const { name, description, price, stocks, category, parentProductId } = req.body;
         if (!name || !description || price == null) {
             return res.status(400).json({ error: 'name, description, and price are required.' });
         }
-        const existing = await Product.findOne({ name });
-        if (existing) return res.status(409).json({ error: 'A product with that name already exists.' });
-
         let images = [];
         if (req.uploadedImages && req.uploadedImages.length > 0) images = req.uploadedImages;
 
-        const newProduct = new Product({ name, description, price, stocks, category, images });
+        const newProduct = new Product({ name, description, price, stocks, category, images, parentProductId: parentProductId || null });
         const saved = await newProduct.save();
         return res.status(201).json(saved);
     } catch (error) { errorHandler(error, req, res); }
@@ -85,12 +82,20 @@ module.exports.addProductImageByUrl = async (req, res) => {
 };
 
 module.exports.retrieveAllProducts = async (req, res) => {
-    try { return res.status(200).json(await Product.find({})); }
+    try {
+        const filter = {};
+        if (req.query.includeAddOns !== 'true') filter.parentProductId = null;
+        return res.status(200).json(await Product.find(filter));
+    }
     catch (error) { errorHandler(error, req, res); }
 };
 
 module.exports.retrieveAllActive = async (req, res) => {
-    try { return res.status(200).json(await Product.find({ isActive: true })); }
+    try {
+        const filter = { isActive: true };
+        if (req.query.includeAddOns !== 'true') filter.parentProductId = null;
+        return res.status(200).json(await Product.find(filter));
+    }
     catch (error) { errorHandler(error, req, res); }
 };
 
@@ -105,7 +110,7 @@ module.exports.retrieveSingleProduct = async (req, res) => {
 // Update — supports name, description, price, stocks, category, options, configurations, kits, variant fields
 module.exports.updateProduct = async (req, res) => {
     try {
-        const allowed = ['name', 'description', 'price', 'stocks', 'category', 'options', 'configurations', 'configAvailabilityRules', 'kits', 'specifications', 'useVariants', 'variantDimensions', 'variants', 'variantImages'];
+        const allowed = ['name', 'description', 'price', 'stocks', 'category', 'options', 'configurations', 'configAvailabilityRules', 'kits', 'specifications', 'useVariants', 'variantDimensions', 'variants', 'variantImages', 'parentProductId'];
         const updateData = {};
         for (const field of allowed) {
             if (req.body[field] !== undefined) updateData[field] = req.body[field];
@@ -283,7 +288,7 @@ module.exports.searchByName = async (req, res) => {
         const { productName } = req.body;
         if (!productName || typeof productName !== 'string') return res.status(400).json({ error: 'productName is required.' });
         const escaped = productName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        return res.status(200).json(await Product.find({ name: { $regex: escaped, $options: 'i' }, isActive: true }));
+        return res.status(200).json(await Product.find({ name: { $regex: escaped, $options: 'i' }, isActive: true, parentProductId: null }));
     } catch (error) { errorHandler(error, req, res); }
 };
 
@@ -291,6 +296,6 @@ module.exports.searchByPrice = async (req, res) => {
     try {
         const { minPrice, maxPrice } = req.body;
         if (minPrice == null || maxPrice == null) return res.status(400).json({ error: 'minPrice and maxPrice are required.' });
-        return res.status(200).json(await Product.find({ price: { $gte: minPrice, $lte: maxPrice }, isActive: true }));
+        return res.status(200).json(await Product.find({ price: { $gte: minPrice, $lte: maxPrice }, isActive: true, parentProductId: null }));
     } catch (error) { errorHandler(error, req, res); }
 };
