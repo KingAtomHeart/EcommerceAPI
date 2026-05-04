@@ -107,7 +107,11 @@ module.exports.createOrder = async (req, res) => {
             if (addLink.targetUserId.toString() !== userId) return res.status(403).json({ error: 'This link is not for your account.' });
         }
 
-        const cart = await Cart.findOne({ userId }).populate('cartItems.productId', 'name price stocks isActive options configurations useVariants variants configAvailabilityRules');
+        const cart = await Cart.findOne({ userId }).populate({
+            path: 'cartItems.productId',
+            select: 'name price stocks isActive options configurations useVariants variants configAvailabilityRules parentProductId images',
+            populate: { path: 'parentProductId', select: 'name images' }
+        });
 
         if (!cart || cart.cartItems.length === 0) {
             return res.status(400).json({ error: 'Your cart is empty. Add items before checking out.' });
@@ -255,6 +259,11 @@ module.exports.createOrder = async (req, res) => {
                 return res.status(400).json({ error: `"${product.name}" is no longer available.` });
             }
 
+            // For add-ons, surface the parent product as the order line so the
+            // customer sees the parent in their order history.
+            const displayName = product.parentProductId?.name || product.name;
+            const displayImage = product.parentProductId?.images?.[0]?.url || product.images?.[0]?.url || '';
+
             // ── Variant-based item ──
             if (product.useVariants && item.variantId) {
                 const variant = product.variants?.id(item.variantId);
@@ -270,8 +279,8 @@ module.exports.createOrder = async (req, res) => {
                 const attrStr = Object.entries(attrs).map(([k, v]) => `${k}: ${v}`).join(', ');
                 productsOrdered.push({
                     productId: product._id,
-                    productName: product.name + (attrStr ? ` (${attrStr})` : ''),
-                    productImage: product.images?.[0]?.url || '',
+                    productName: displayName + (attrStr ? ` (${attrStr})` : ''),
+                    productImage: displayImage,
                     quantity: item.quantity,
                     subtotal,
                     variantId: item.variantId,
@@ -314,8 +323,8 @@ module.exports.createOrder = async (req, res) => {
             const configStr = (item.configurations || []).map(c => `${c.name}: ${c.selected}`).join(', ');
             productsOrdered.push({
                 productId: product._id,
-                productName: product.name + optionLabel + (configStr ? ` (${configStr})` : ''),
-                productImage: product.images?.[0]?.url || '',
+                productName: displayName + optionLabel + (configStr ? ` (${configStr})` : ''),
+                productImage: displayImage,
                 quantity: item.quantity,
                 subtotal,
                 selectedOption: item.selectedOption?.groupId ? {
@@ -554,7 +563,11 @@ module.exports.checkoutGroupBuy = async (req, res) => {
 module.exports.createPaymentSession = async (req, res) => {
     try {
         const userId = req.user.id;
-        const cart = await Cart.findOne({ userId }).populate('cartItems.productId', 'name price stocks isActive options configurations useVariants variants configAvailabilityRules');
+        const cart = await Cart.findOne({ userId }).populate({
+            path: 'cartItems.productId',
+            select: 'name price stocks isActive options configurations useVariants variants configAvailabilityRules parentProductId images',
+            populate: { path: 'parentProductId', select: 'name images' }
+        });
 
         if (!cart || cart.cartItems.length === 0) {
             return res.status(400).json({ error: 'Your cart is empty.' });
@@ -604,6 +617,9 @@ module.exports.createPaymentSession = async (req, res) => {
             if (!product) return res.status(400).json({ error: 'A product in your cart no longer exists.' });
             if (!product.isActive) return res.status(400).json({ error: `"${product.name}" is no longer available.` });
 
+            const displayName = product.parentProductId?.name || product.name;
+            const displayImage = product.parentProductId?.images?.[0]?.url || product.images?.[0]?.url || '';
+
             // Variant-based item
             if (product.useVariants && item.variantId) {
                 const variant = product.variants?.id(item.variantId);
@@ -619,8 +635,8 @@ module.exports.createPaymentSession = async (req, res) => {
                 const attrStr = Object.entries(attrs).map(([k, v]) => `${k}: ${v}`).join(', ');
                 productsOrdered.push({
                     productId: product._id,
-                    productName: product.name + (attrStr ? ` (${attrStr})` : ''),
-                    productImage: product.images?.[0]?.url || '',
+                    productName: displayName + (attrStr ? ` (${attrStr})` : ''),
+                    productImage: displayImage,
                     quantity: item.quantity,
                     subtotal: vSubtotal,
                     variantId: item.variantId,
@@ -656,8 +672,8 @@ module.exports.createPaymentSession = async (req, res) => {
             const configStr = (item.configurations || []).map(c => `${c.name}: ${c.selected}`).join(', ');
             productsOrdered.push({
                 productId: product._id,
-                productName: product.name + optionLabel + (configStr ? ` (${configStr})` : ''),
-                productImage: product.images?.[0]?.url || '',
+                productName: displayName + optionLabel + (configStr ? ` (${configStr})` : ''),
+                productImage: displayImage,
                 quantity: item.quantity,
                 subtotal,
                 selectedOption: item.selectedOption?.groupId ? {
@@ -939,9 +955,12 @@ module.exports.addItemToOrder = async (req, res) => {
         const order = await Order.findById(req.params.orderId);
         if (!order) return res.status(404).json({ error: 'Order not found.' });
 
-        const product = await Product.findById(productId);
+        const product = await Product.findById(productId).populate('parentProductId', 'name images');
         if (!product) return res.status(404).json({ error: 'Product not found.' });
         if (!product.isActive) return res.status(400).json({ error: 'Product is not active.' });
+
+        const displayName = product.parentProductId?.name || product.name;
+        const displayImage = product.parentProductId?.images?.[0]?.url || product.images?.[0]?.url || '';
 
         let unitPrice = product.price;
         let optionLabel = '';
@@ -976,12 +995,12 @@ module.exports.addItemToOrder = async (req, res) => {
         const subtotal = unitPrice * quantity;
         const attrStr = Object.entries(resolvedVariantAttrs).map(([k, v]) => `${k}: ${v}`).join(', ');
         const configStr = configurations.map(c => `${c.name}: ${c.selected}`).join(', ');
-        const productName = product.name + optionLabel + (attrStr ? ` (${attrStr})` : configStr ? ` (${configStr})` : '');
+        const productName = displayName + optionLabel + (attrStr ? ` (${attrStr})` : configStr ? ` (${configStr})` : '');
 
         order.productsOrdered.push({
             productId: product._id,
             productName,
-            productImage: product.images?.[0]?.url || '',
+            productImage: displayImage,
             quantity, subtotal,
             selectedOption: selectedOption?.groupId ? selectedOption : undefined,
             configurations,

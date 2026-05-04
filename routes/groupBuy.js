@@ -20,6 +20,7 @@ const safeUpload = (req, res, next) => {
 router.get('/active', gb.getActiveGroupBuys);
 router.get('/my/orders', verify, gb.getMyOrders);
 router.get('/all', verify, verifyAdmin, gb.getAllGroupBuys);
+router.get('/all-orders', verify, verifyAdmin, gb.getAllOrders);
 // FIX: create uses JSON, images uploaded separately via /:id/images
 router.post('/create', verify, verifyAdmin, gb.createGroupBuy);
 router.patch('/orders/:orderId/status', verify, verifyAdmin, gb.updateOrderStatus);

@@ -386,6 +386,18 @@ module.exports.getMyOrders = async (req, res) => {
     } catch (error) { errorHandler(error, req, res); }
 };
 
+// Admin: list every group-buy order across all GBs (used by the unified
+// admin Orders tab that mixes in-stock and group-buy orders).
+module.exports.getAllOrders = async (req, res) => {
+    try {
+        const orders = await GroupBuyOrder.find({})
+            .populate('userId', 'firstName lastName email mobileNo')
+            .populate('groupBuyId', 'name parentGroupBuyId images')
+            .sort({ createdAt: -1 });
+        return res.status(200).json({ orders });
+    } catch (error) { errorHandler(error, req, res); }
+};
+
 module.exports.getGroupBuyOrders = async (req, res) => {
     try {
         const gb = await GroupBuy.findById(req.params.id).select('parentGroupBuyId');
