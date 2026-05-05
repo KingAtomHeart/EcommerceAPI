@@ -111,7 +111,9 @@ const productSchema = new mongoose.Schema({
         default: []
     },
     parentProductId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', default: null, index: true },
-    isActive: { type: Boolean, default: true }
+    isActive: { type: Boolean, default: true },
+    // Queued products are saved as drafts: hidden from customers, editable in admin.
+    isQueued: { type: Boolean, default: false }
 }, { timestamps: true });
 
 productSchema.index({ name: 'text', description: 'text' });

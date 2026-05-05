@@ -21,7 +21,7 @@ const generateOrderCode = async () => {
 
 module.exports.createGroupBuy = async (req, res) => {
     try {
-        const { name, description, basePrice, options, configurations, kits, moq, maxOrders, startDate, endDate, category, status, availabilityRules, parentGroupBuyId } = req.body;
+        const { name, description, basePrice, options, configurations, kits, moq, maxOrders, startDate, endDate, category, status, availabilityRules, parentGroupBuyId, isQueued } = req.body;
         if (!name || basePrice == null) return res.status(400).json({ error: 'name and basePrice are required.' });
 
         let resolvedParentId = null;
@@ -41,7 +41,8 @@ module.exports.createGroupBuy = async (req, res) => {
             startDate: startDate || null, endDate: endDate || null,
             category: category || 'keyboards', status: status || 'interest-check',
             availabilityRules: availabilityRules || [],
-            parentGroupBuyId: resolvedParentId
+            parentGroupBuyId: resolvedParentId,
+            isQueued: !!isQueued,
         });
         const saved = await gb.save();
         return res.status(201).json(saved);
@@ -50,7 +51,7 @@ module.exports.createGroupBuy = async (req, res) => {
 
 module.exports.updateGroupBuy = async (req, res) => {
     try {
-        const allowedFields = ['name', 'description', 'basePrice', 'options', 'configurations', 'kits', 'moq', 'maxOrders', 'startDate', 'endDate', 'category', 'availabilityRules'];
+        const allowedFields = ['name', 'description', 'basePrice', 'options', 'configurations', 'kits', 'moq', 'maxOrders', 'startDate', 'endDate', 'category', 'availabilityRules', 'isQueued'];
         const updateData = {};
         for (const field of allowedFields) { if (req.body[field] !== undefined) updateData[field] = req.body[field]; }
 
@@ -190,7 +191,9 @@ module.exports.getAllGroupBuys = async (req, res) => {
 module.exports.getActiveGroupBuys = async (req, res) => {
     try {
         const includeAddOns = req.query.includeAddOns === 'true';
-        const filter = includeAddOns ? { isActive: true } : { isActive: true, parentGroupBuyId: null };
+        const filter = includeAddOns
+            ? { isActive: true, isQueued: { $ne: true } }
+            : { isActive: true, isQueued: { $ne: true }, parentGroupBuyId: null };
         return res.status(200).json(
             await GroupBuy.find(filter)
                 .select('name description basePrice options images status category orderCount endDate moq maxOrders isActive parentGroupBuyId')

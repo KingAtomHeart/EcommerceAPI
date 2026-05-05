@@ -4,14 +4,18 @@ const cloudinary = require('cloudinary').v2;
 
 module.exports.createProduct = async (req, res) => {
     try {
-        const { name, description, price, stocks, category, parentProductId } = req.body;
+        const { name, description, price, stocks, category, parentProductId, isQueued } = req.body;
         if (!name || !description || price == null) {
             return res.status(400).json({ error: 'name, description, and price are required.' });
         }
         let images = [];
         if (req.uploadedImages && req.uploadedImages.length > 0) images = req.uploadedImages;
 
-        const newProduct = new Product({ name, description, price, stocks, category, images, parentProductId: parentProductId || null });
+        const newProduct = new Product({
+            name, description, price, stocks, category, images,
+            parentProductId: parentProductId || null,
+            isQueued: !!isQueued,
+        });
         const saved = await newProduct.save();
         return res.status(201).json(saved);
     } catch (error) { errorHandler(error, req, res); }
@@ -92,7 +96,7 @@ module.exports.retrieveAllProducts = async (req, res) => {
 
 module.exports.retrieveAllActive = async (req, res) => {
     try {
-        const filter = { isActive: true };
+        const filter = { isActive: true, isQueued: { $ne: true } };
         if (req.query.includeAddOns !== 'true') filter.parentProductId = null;
         return res.status(200).json(await Product.find(filter));
     }
@@ -110,7 +114,7 @@ module.exports.retrieveSingleProduct = async (req, res) => {
 // Update — supports name, description, price, stocks, category, options, configurations, kits, variant fields
 module.exports.updateProduct = async (req, res) => {
     try {
-        const allowed = ['name', 'description', 'price', 'stocks', 'category', 'options', 'configurations', 'configAvailabilityRules', 'kits', 'specifications', 'useVariants', 'variantDimensions', 'variants', 'variantImages', 'parentProductId'];
+        const allowed = ['name', 'description', 'price', 'stocks', 'category', 'options', 'configurations', 'configAvailabilityRules', 'kits', 'specifications', 'useVariants', 'variantDimensions', 'variants', 'variantImages', 'parentProductId', 'isQueued'];
         const updateData = {};
         for (const field of allowed) {
             if (req.body[field] !== undefined) updateData[field] = req.body[field];
@@ -288,7 +292,7 @@ module.exports.searchByName = async (req, res) => {
         const { productName } = req.body;
         if (!productName || typeof productName !== 'string') return res.status(400).json({ error: 'productName is required.' });
         const escaped = productName.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
-        return res.status(200).json(await Product.find({ name: { $regex: escaped, $options: 'i' }, isActive: true, parentProductId: null }));
+        return res.status(200).json(await Product.find({ name: { $regex: escaped, $options: 'i' }, isActive: true, isQueued: { $ne: true }, parentProductId: null }));
     } catch (error) { errorHandler(error, req, res); }
 };
 
@@ -296,6 +300,6 @@ module.exports.searchByPrice = async (req, res) => {
     try {
         const { minPrice, maxPrice } = req.body;
         if (minPrice == null || maxPrice == null) return res.status(400).json({ error: 'minPrice and maxPrice are required.' });
-        return res.status(200).json(await Product.find({ price: { $gte: minPrice, $lte: maxPrice }, isActive: true, parentProductId: null }));
+        return res.status(200).json(await Product.find({ price: { $gte: minPrice, $lte: maxPrice }, isActive: true, isQueued: { $ne: true }, parentProductId: null }));
     } catch (error) { errorHandler(error, req, res); }
 };

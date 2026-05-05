@@ -96,6 +96,8 @@ const groupBuySchema = new mongoose.Schema({
     orderCount: { type: Number, default: 0 },
     category: { type: String, trim: true, default: 'keyboards' },
     isActive: { type: Boolean, default: true },
+    // Queued group buys are saved as drafts: hidden from customers, editable in admin.
+    isQueued: { type: Boolean, default: false },
     parentGroupBuyId: { type: mongoose.Schema.Types.ObjectId, ref: 'GroupBuy', default: null }
 }, { timestamps: true });
 
