@@ -305,12 +305,15 @@ module.exports.placeOrder = async (req, res) => {
                 });
             }
 
+            // Option price is ADDITIONAL on top of basePrice. Snapshot stores the unit total
+            // (base + additional) so order display rendering stays simple.
+            const unitTotal = (gb.basePrice || 0) + (optVal.price || 0);
             selectedOption = {
                 groupName: optGroup.name,
                 value: optVal.value,
-                price: optVal.price
+                price: unitTotal
             };
-            totalPrice = optVal.price * (quantity || 1);
+            totalPrice = unitTotal * (quantity || 1);
 
             // Add config modifiers
             if (configurations?.length > 0) {
@@ -435,8 +438,9 @@ module.exports.addItemToCartOrder = async (req, res) => {
             const val = grp?.values?.id(optionValueId);
             if (!val) return res.status(400).json({ error: 'Invalid option.' });
             if (val.stocks >= 0 && val.stocks < quantity) return res.status(400).json({ error: `Only ${val.stocks} in stock.` });
-            selectedOption = { groupName: grp.name, value: val.value, price: val.price };
-            totalPrice = val.price * quantity;
+            const unitTotal = (gb.basePrice || 0) + (val.price || 0);
+            selectedOption = { groupName: grp.name, value: val.value, price: unitTotal };
+            totalPrice = unitTotal * quantity;
         } else {
             totalPrice = (gb.basePrice || 0) * quantity;
         }

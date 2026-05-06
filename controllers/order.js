@@ -272,7 +272,7 @@ module.exports.createOrder = async (req, res) => {
                 if (variant.stock >= 0 && variant.stock < item.quantity) {
                     return res.status(400).json({ error: `Only ${variant.stock} in stock for your selected variant of "${product.name}".` });
                 }
-                const unitPrice = variant.price != null ? variant.price : product.price;
+                const unitPrice = (product.price || 0) + (variant.price || 0);
                 const subtotal = unitPrice * item.quantity;
                 totalPrice += subtotal;
                 const attrs = variant.attributes instanceof Map ? Object.fromEntries(variant.attributes) : (variant.attributes || {});
@@ -292,7 +292,7 @@ module.exports.createOrder = async (req, res) => {
             let unitPrice = product.price;
             let optionLabel = '';
 
-            // Option-based item
+            // Option-based item — option price adds on top of product.price
             if (item.selectedOption?.groupId) {
                 const group = product.options?.id(item.selectedOption.groupId);
                 const val = group?.values?.id(item.selectedOption.valueId);
@@ -302,7 +302,7 @@ module.exports.createOrder = async (req, res) => {
                 if (val.stocks >= 0 && val.stocks < item.quantity) {
                     return res.status(400).json({ error: `"${product.name} — ${val.value}" only has ${val.stocks} in stock (you requested ${item.quantity}).` });
                 }
-                unitPrice = val.price;
+                unitPrice = (product.price || 0) + (val.price || 0);
                 optionLabel = ` — ${item.selectedOption.groupName}: ${item.selectedOption.value}`;
             } else if (product.stocks !== undefined && product.stocks !== -1 && product.stocks < item.quantity) {
                 return res.status(400).json({ error: `"${product.name}" only has ${product.stocks} in stock (you requested ${item.quantity}).` });
@@ -628,7 +628,7 @@ module.exports.createPaymentSession = async (req, res) => {
                 if (variant.stock >= 0 && variant.stock < item.quantity) {
                     return res.status(400).json({ error: `Only ${variant.stock} in stock for your selected variant of "${product.name}".` });
                 }
-                const vUnit = variant.price != null ? variant.price : product.price;
+                const vUnit = (product.price || 0) + (variant.price || 0);
                 const vSubtotal = vUnit * item.quantity;
                 totalPrice += vSubtotal;
                 const attrs = variant.attributes instanceof Map ? Object.fromEntries(variant.attributes) : (variant.attributes || {});
@@ -653,7 +653,7 @@ module.exports.createPaymentSession = async (req, res) => {
                 const val = group?.values?.id(item.selectedOption.valueId);
                 if (!val) return res.status(400).json({ error: `Option no longer exists for "${product.name}".` });
                 if (val.stocks >= 0 && val.stocks < item.quantity) return res.status(400).json({ error: `"${product.name} — ${val.value}" only has ${val.stocks} in stock.` });
-                unitPrice = val.price;
+                unitPrice = (product.price || 0) + (val.price || 0);
                 optionLabel = ` — ${item.selectedOption.groupName}: ${item.selectedOption.value}`;
             } else if (product.stocks !== undefined && product.stocks !== -1 && product.stocks < item.quantity) {
                 return res.status(400).json({ error: `"${product.name}" only has ${product.stocks} in stock.` });
@@ -972,7 +972,7 @@ module.exports.addItemToOrder = async (req, res) => {
             if (!variant) return res.status(400).json({ error: 'Variant not found.' });
             if (variant.available === false) return res.status(400).json({ error: 'Variant unavailable.' });
             if (variant.stock >= 0 && variant.stock < quantity) return res.status(400).json({ error: `Only ${variant.stock} in stock.` });
-            unitPrice = variant.price != null ? variant.price : product.price;
+            unitPrice = (product.price || 0) + (variant.price || 0);
             resolvedVariantId = variantId;
             resolvedVariantAttrs = variant.attributes instanceof Map ? Object.fromEntries(variant.attributes) : (variant.attributes || {});
         } else if (selectedOption?.groupId) {
@@ -980,7 +980,7 @@ module.exports.addItemToOrder = async (req, res) => {
             const val = group?.values?.id(selectedOption.valueId);
             if (!val) return res.status(400).json({ error: 'Option not found.' });
             if (val.stocks >= 0 && val.stocks < quantity) return res.status(400).json({ error: `Only ${val.stocks} in stock.` });
-            unitPrice = val.price;
+            unitPrice = (product.price || 0) + (val.price || 0);
             optionLabel = ` — ${selectedOption.groupName}: ${selectedOption.value}`;
         } else if (product.stocks !== undefined && product.stocks !== -1 && product.stocks < quantity) {
             return res.status(400).json({ error: `Only ${product.stocks} in stock.` });

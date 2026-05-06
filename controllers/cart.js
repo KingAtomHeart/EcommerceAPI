@@ -23,14 +23,15 @@ const cartQtyForConfigOption = (cartItems, productId, configName, configValue) =
         .reduce((sum, i) => sum + i.quantity, 0);
 
 // Resolve unit price from a product + cart request body.
-// Priority: option group selection > legacy kit > base price + config modifiers.
+// Pricing model: product.price is the base. Option values, variant prices, and config
+// priceModifiers all add ON TOP of the base. A blank/null option/variant price is treated as 0.
 function resolveUnitPrice(product, { optionGroupId, optionValueId, kitId, configurations }) {
     // ── Option-based (new system) ──
     if (optionGroupId && optionValueId) {
         const group = product.options?.id(optionGroupId);
         const val = group?.values?.id(optionValueId);
         if (!val) return null; // signals "not found"
-        let price = val.price;
+        let price = (product.price || 0) + (val.price || 0);
         if (configurations?.length > 0) {
             for (const chosen of configurations) {
                 const cfgDef = product.configurations?.find(c => c.name === chosen.name);
@@ -127,7 +128,7 @@ module.exports.addToCart = async (req, res) => {
                 });
             }
 
-            const unitPrice = variant.price != null ? variant.price : product.price;
+            const unitPrice = (product.price || 0) + (variant.price || 0);
             const subtotal = unitPrice * quantity;
             const attrsSnapshot = toObj(variant.attributes);
 
@@ -427,7 +428,7 @@ module.exports.updateCartQuantity = async (req, res) => {
             return res.status(400).json({ error: `Only ${product.stocks} item(s) in stock.` });
         }
 
-        // Recalculate unit price
+        // Recalculate unit price (option/variant prices are additive on top of product.price)
         let unitPrice;
         if (item.variantId) {
             const variant = product.variants?.id(item.variantId);
@@ -435,14 +436,14 @@ module.exports.updateCartQuantity = async (req, res) => {
                 if (variant.stock >= 0 && variant.stock < quantity) {
                     return res.status(400).json({ error: `Only ${variant.stock} available for this variant.` });
                 }
-                unitPrice = variant.price != null ? variant.price : product.price;
+                unitPrice = (product.price || 0) + (variant.price || 0);
             } else {
                 unitPrice = product.price;
             }
         } else if (item.selectedOption?.groupId) {
             const group = product.options?.id(item.selectedOption.groupId);
             const val = group?.values?.id(item.selectedOption.valueId);
-            unitPrice = val?.price || 0;
+            unitPrice = (product.price || 0) + (val?.price || 0);
             if (item.configurations?.length > 0) {
                 for (const chosen of item.configurations) {
                     const cfgDef = product.configurations?.find(c => c.name === chosen.name);
@@ -589,7 +590,8 @@ module.exports.addGroupBuyToCart = async (req, res) => {
                 }
             }
 
-            unitPrice = optVal.price;
+            // Option price is additional on top of basePrice
+            unitPrice = (gb.basePrice || 0) + (optVal.price || 0);
             selectedOption = {
                 groupId: optGroup._id,
                 groupName: optGroup.name,
