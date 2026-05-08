@@ -1,11 +1,43 @@
 const Cart = require('../models/Cart.js');
 const Product = require('../models/Product.js');
 const GroupBuy = require('../models/GroupBuy.js');
+const OrderAddToken = require('../models/OrderAddToken.js');
+const GroupBuyOrder = require('../models/GroupBuyOrder.js');
 const { errorHandler } = require('../auth.js');
 const { toObj } = require('../utils/variantResolution.js');
 
+// Resolve the family (root + add-on children) of group-buy IDs allowed for a given add-link token.
+// Returns null when the token isn't gb-cart or the family can't be derived (no enforcement).
+async function getAllowedGbFamilyForToken(tokenStr, userId) {
+    if (!tokenStr) return null;
+    const tokenDoc = await OrderAddToken.findOne({ token: tokenStr });
+    if (!tokenDoc || tokenDoc.usedAt || tokenDoc.expiresAt < new Date()) return null;
+    if (tokenDoc.targetUserId.toString() !== userId) return null;
+    if (tokenDoc.targetType !== 'gb-cart') return null;
+
+    const seedOrders = await GroupBuyOrder.find({ cartOrderCode: tokenDoc.targetCartOrderCode })
+        .populate('groupBuyId', '_id parentGroupBuyId');
+    const seedGbs = seedOrders.map(o => o.groupBuyId).filter(Boolean);
+    let rootId = null;
+    for (const g of seedGbs) if (!g.parentGroupBuyId) { rootId = g._id.toString(); break; }
+    if (!rootId) for (const g of seedGbs) if (g.parentGroupBuyId) { rootId = g.parentGroupBuyId.toString(); break; }
+    if (!rootId) return null;
+    const addOns = await GroupBuy.find({ parentGroupBuyId: rootId }).select('_id');
+    return new Set([rootId, ...addOns.map(a => a._id.toString())]);
+}
+
 const recalcTotal = (cartItems) =>
     cartItems.reduce((sum, item) => sum + item.subtotal, 0);
+
+// Reject in-stock cart adds when the customer is locked to a GB add-link.
+// Different fulfillment timelines mean we can't mix in-stock with a GB add-link order.
+async function isGbCartTokenActive(tokenStr, userId) {
+    if (!tokenStr) return false;
+    const t = await OrderAddToken.findOne({ token: tokenStr });
+    if (!t || t.usedAt || t.expiresAt < new Date()) return false;
+    if (t.targetUserId.toString() !== userId) return false;
+    return t.targetType === 'gb-cart';
+}
 
 // Returns true if two configurations arrays represent the same selection.
 const configsMatch = (a, b) => {
@@ -87,10 +119,15 @@ module.exports.retrieveUserCart = async (req, res) => {
 // Base product: product.price + config modifiers
 module.exports.addToCart = async (req, res) => {
     try {
-        const { productId, quantity, optionGroupId, optionValueId, kitId, configurations } = req.body;
+        const { productId, quantity, optionGroupId, optionValueId, kitId, configurations, addToOrderToken } = req.body;
 
         if (!productId || !quantity || quantity < 1) {
             return res.status(400).json({ error: 'productId and a valid quantity are required.' });
+        }
+
+        // Customers on a GB add-link can only add items from that group buy family.
+        if (await isGbCartTokenActive(addToOrderToken, req.user.id)) {
+            return res.status(400).json({ error: 'Your add-link is for a group buy. In-stock items can’t be added to it — only items from your original group buy or its add-ons.' });
         }
 
         const product = await Product.findById(productId);
@@ -543,10 +580,17 @@ module.exports.clearCart = async (req, res) => {
 // ─── POST /cart/add-group-buy-to-cart ─────────────────────────────────────────
 module.exports.addGroupBuyToCart = async (req, res) => {
     try {
-        const { groupBuyId, quantity, optionGroupId, optionValueId, configurations } = req.body;
+        const { groupBuyId, quantity, optionGroupId, optionValueId, configurations, addToOrderToken } = req.body;
 
         if (!groupBuyId || !quantity || quantity < 1) {
             return res.status(400).json({ error: 'groupBuyId and a valid quantity are required.' });
+        }
+
+        // If the customer is following an add-link, lock them to the originating GB family.
+        // Different group buys have different fulfillment timelines so they can't be combined.
+        const allowedFamily = await getAllowedGbFamilyForToken(addToOrderToken, req.user.id);
+        if (allowedFamily && !allowedFamily.has(String(groupBuyId))) {
+            return res.status(400).json({ error: 'You can only add items from the same group buy (or its add-ons) using this link.' });
         }
 
         const gb = await GroupBuy.findById(groupBuyId);

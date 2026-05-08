@@ -124,6 +124,24 @@ module.exports.createOrder = async (req, res) => {
                 return res.status(400).json({ error: 'This add-to-order link is for an in-stock order. Group buy items cannot be added to it.' });
             }
 
+            // GB add-links are locked to the originating group-buy family (root + add-ons).
+            if (addLink) {
+                const seedOrders = await GroupBuyOrder.find({ cartOrderCode: addLink.targetCartOrderCode })
+                    .populate('groupBuyId', '_id parentGroupBuyId');
+                const seedGbs = seedOrders.map(o => o.groupBuyId).filter(Boolean);
+                let rootId = null;
+                for (const g of seedGbs) if (!g.parentGroupBuyId) { rootId = g._id.toString(); break; }
+                if (!rootId) for (const g of seedGbs) if (g.parentGroupBuyId) { rootId = g.parentGroupBuyId.toString(); break; }
+                if (rootId) {
+                    const addOns = await GroupBuy.find({ parentGroupBuyId: rootId }).select('_id');
+                    const allowed = new Set([rootId, ...addOns.map(a => a._id.toString())]);
+                    const offending = cart.cartItems.find(i => i.groupBuyId && !allowed.has(i.groupBuyId.toString()));
+                    if (offending) {
+                        return res.status(400).json({ error: 'You can only add items from the same group buy (or its add-ons) using this link.' });
+                    }
+                }
+            }
+
             const orders = [];
             // If add-link mode: reuse existing cartOrderCode/cartCheckoutId + shipping
             // Else: generate new ones from request body shipping
@@ -1106,8 +1124,22 @@ module.exports.validateAddOrderToken = async (req, res) => {
             info.itemCount = order?.productsOrdered?.length || 0;
         } else {
             info.targetLabel = `Order ${tokenDoc.targetCartOrderCode}`;
-            const items = await GroupBuyOrder.find({ cartOrderCode: tokenDoc.targetCartOrderCode }).select('_id');
+            const items = await GroupBuyOrder.find({ cartOrderCode: tokenDoc.targetCartOrderCode })
+                .populate('groupBuyId', '_id parentGroupBuyId');
             info.itemCount = items.length;
+
+            // Lock GB add-links to the originating group-buy family (root + add-ons).
+            const gbs = items.map(i => i.groupBuyId).filter(Boolean);
+            const rootId = (() => {
+                for (const g of gbs) if (!g.parentGroupBuyId) return g._id.toString();
+                for (const g of gbs) if (g.parentGroupBuyId) return g.parentGroupBuyId.toString();
+                return null;
+            })();
+            if (rootId) {
+                const addOns = await GroupBuy.find({ parentGroupBuyId: rootId }).select('_id');
+                info.rootGroupBuyId = rootId;
+                info.allowedGroupBuyIds = [rootId, ...addOns.map(a => a._id.toString())];
+            }
         }
         return res.status(200).json(info);
     } catch (error) { errorHandler(error, req, res); }
