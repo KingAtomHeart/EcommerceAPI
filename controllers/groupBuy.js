@@ -477,11 +477,13 @@ module.exports.addItemToCartOrder = async (req, res) => {
     } catch (error) { errorHandler(error, req, res); }
 };
 
+// Valid status values — current set + legacy values for backwards compat.
+const VALID_GB_ORDER_STATUSES = ['Pending', 'Processing', 'Shipped', 'Delivered', 'Cancelled', 'Confirmed', 'In Production'];
+
 module.exports.updateOrderStatus = async (req, res) => {
     try {
         const { status } = req.body;
-        const valid = ['Confirmed', 'In Production', 'Shipped', 'Delivered', 'Cancelled'];
-        if (!valid.includes(status)) return res.status(400).json({ error: 'Invalid status.' });
+        if (!VALID_GB_ORDER_STATUSES.includes(status)) return res.status(400).json({ error: 'Invalid status.' });
         const order = await GroupBuyOrder.findById(req.params.orderId);
         if (!order) return res.status(404).json({ error: 'Order not found.' });
 
@@ -507,6 +509,58 @@ module.exports.updateOrderStatus = async (req, res) => {
         order.status = status;
         await order.save();
         return res.status(200).json({ message: 'Updated.', order });
+    } catch (error) { errorHandler(error, req, res); }
+};
+
+// Toggle the per-order packed checkbox (each GroupBuyOrder is one line item).
+// Independent from status — purely a packing checklist for whoever is preparing the box.
+module.exports.updateOrderPacked = async (req, res) => {
+    try {
+        const { packed } = req.body;
+        const order = await GroupBuyOrder.findById(req.params.orderId);
+        if (!order) return res.status(404).json({ error: 'Order not found.' });
+        order.packed = !!packed;
+        await order.save();
+        return res.status(200).json({ message: 'Updated.', order });
+    } catch (error) { errorHandler(error, req, res); }
+};
+
+// Bulk update: set status on every order sharing a cart (cartOrderCode or cartCheckoutId).
+// Used by the per-cart admin dropdown. Cancelling restocks each non-cancelled order.
+module.exports.updateCartOrderStatus = async (req, res) => {
+    try {
+        const { status, cartOrderCode, cartCheckoutId } = req.body;
+        if (!VALID_GB_ORDER_STATUSES.includes(status)) return res.status(400).json({ error: 'Invalid status.' });
+        const filter = {};
+        if (cartOrderCode) filter.cartOrderCode = cartOrderCode;
+        else if (cartCheckoutId) filter.cartCheckoutId = cartCheckoutId;
+        else return res.status(400).json({ error: 'cartOrderCode or cartCheckoutId is required.' });
+
+        const orders = await GroupBuyOrder.find(filter);
+        if (orders.length === 0) return res.status(404).json({ error: 'No orders found for this cart.' });
+
+        for (const order of orders) {
+            if (status === 'Cancelled' && order.status !== 'Cancelled') {
+                const gb = await GroupBuy.findById(order.groupBuyId);
+                if (gb) {
+                    if (order.selectedOption?.value && gb.options?.length > 0) {
+                        for (const grp of gb.options) {
+                            if (grp.name !== order.selectedOption.groupName) continue;
+                            const val = grp.values.find(v => v.value === order.selectedOption.value);
+                            if (val && val.stocks >= 0) {
+                                val.stocks += (order.quantity || 1);
+                                val.available = true;
+                            }
+                        }
+                    }
+                    gb.orderCount = Math.max(0, (gb.orderCount || 1) - 1);
+                    await gb.save();
+                }
+            }
+            order.status = status;
+            await order.save();
+        }
+        return res.status(200).json({ message: 'Cart status updated.', count: orders.length });
     } catch (error) { errorHandler(error, req, res); }
 };
 

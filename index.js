@@ -17,8 +17,25 @@ const app = express();
 
 // ─── Database ─────────────────────────────────────────────────────────────────
 mongoose.connect(process.env.MONGODB_STRING)
-    .then(() => console.log('Connected to MongoDB Atlas'))
+    .then(() => {
+        console.log('Connected to MongoDB Atlas');
+        backfillOrderNumbers().catch(err => console.error('Order number backfill failed:', err));
+    })
     .catch((err) => console.error('MongoDB connection error:', err));
+
+// One-time backfill: any pre-existing Order without an orderNumber gets one allocated.
+// Idempotent — safe to run on every boot. Scans only documents missing the field.
+async function backfillOrderNumbers() {
+    const Order = require('./models/Order');
+    const cursor = Order.find({ $or: [{ orderNumber: { $exists: false } }, { orderNumber: null }] }).cursor();
+    let filled = 0;
+    for (let doc = await cursor.next(); doc != null; doc = await cursor.next()) {
+        // Pre-save hook allocates a unique value.
+        await doc.save();
+        filled++;
+    }
+    if (filled > 0) console.log(`Backfilled orderNumber for ${filled} legacy order(s)`);
+}
 
 // ─── Middleware ───────────────────────────────────────────────────────────────
 app.use(express.json({

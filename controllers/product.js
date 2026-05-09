@@ -114,7 +114,7 @@ module.exports.retrieveSingleProduct = async (req, res) => {
 // Update — supports name, description, price, stocks, category, options, configurations, kits, variant fields
 module.exports.updateProduct = async (req, res) => {
     try {
-        const allowed = ['name', 'description', 'price', 'stocks', 'category', 'options', 'configurations', 'configAvailabilityRules', 'kits', 'specifications', 'useVariants', 'variantDimensions', 'variants', 'variantImages', 'parentProductId', 'isQueued'];
+        const allowed = ['name', 'description', 'price', 'stocks', 'category', 'options', 'configurations', 'configAvailabilityRules', 'kits', 'specifications', 'useVariants', 'variantDimensions', 'variants', 'variantImages', 'parentProductId', 'isQueued', 'landingPage'];
         const updateData = {};
         for (const field of allowed) {
             if (req.body[field] !== undefined) updateData[field] = req.body[field];

@@ -128,6 +128,13 @@ module.exports.createOrder = async (req, res) => {
             if (addLink) {
                 const seedOrders = await GroupBuyOrder.find({ cartOrderCode: addLink.targetCartOrderCode })
                     .populate('groupBuyId', '_id parentGroupBuyId');
+
+                // Hard block once admin marks the cart Processing+ — different fulfillment timeline.
+                const lockedStatuses = new Set(['Processing', 'In Production', 'Shipped', 'Delivered']);
+                if (seedOrders.some(o => lockedStatuses.has(o.status))) {
+                    return res.status(400).json({ error: 'This order is already being processed and can no longer be modified.' });
+                }
+
                 const seedGbs = seedOrders.map(o => o.groupBuyId).filter(Boolean);
                 let rootId = null;
                 for (const g of seedGbs) if (!g.parentGroupBuyId) { rootId = g._id.toString(); break; }
@@ -363,6 +370,12 @@ module.exports.createOrder = async (req, res) => {
             const target = await Order.findById(addLink.targetOrderId);
             if (!target) return res.status(404).json({ error: 'Target order not found.' });
             if (target.userId.toString() !== userId) return res.status(403).json({ error: 'You cannot add to this order.' });
+
+            // Hard block once admin marks the order Processing+ — order is being prepared.
+            const lockedStatuses = new Set(['Processing', 'In Production', 'Shipped', 'Delivered']);
+            if (lockedStatuses.has(target.status)) {
+                return res.status(400).json({ error: 'This order is already being processed and can no longer be modified.' });
+            }
 
             for (const p of productsOrdered) {
                 target.productsOrdered.push({ ...p, status: 'Pending', addedAfterPurchase: true });
@@ -874,6 +887,22 @@ module.exports.getPaymentStatus = async (req, res) => {
 
 // ─── Update Single Item Status within an Order (Admin) ──────────────────────
 // Restocks the cancelled item; recalculates order.totalPrice as active items only.
+// Toggle the per-item packed checkbox. Independent from status — purely a packing checklist
+// for whoever is preparing the customer's box.
+module.exports.updateOrderItemPacked = async (req, res) => {
+    try {
+        const { orderId, itemId } = req.params;
+        const { packed } = req.body;
+        const order = await Order.findById(orderId);
+        if (!order) return res.status(404).json({ error: 'Order not found.' });
+        const item = order.productsOrdered.id(itemId);
+        if (!item) return res.status(404).json({ error: 'Item not found in order.' });
+        item.packed = !!packed;
+        await order.save();
+        return res.status(200).json({ message: 'Updated.', order });
+    } catch (error) { errorHandler(error, req, res); }
+};
+
 module.exports.updateOrderItemStatus = async (req, res) => {
     try {
         const { orderId, itemId } = req.params;
@@ -1161,10 +1190,14 @@ module.exports.searchOrders = async (req, res) => {
             ? { _id: q }
             : { _id: { $exists: true } }; // we'll filter by _id substring client-fallback
 
-        // Regular orders: match by _id (exact) or last-8 substring
+        // Regular orders: match by orderNumber (the customer-facing identifier),
+        // _id (exact) for legacy URLs, or _id substring as a fallback.
         const orderFilter = isObjectId
             ? { _id: q }
-            : { $expr: { $regexMatch: { input: { $toString: '$_id' }, regex: escaped, options: 'i' } } };
+            : { $or: [
+                { orderNumber: regex },
+                { $expr: { $regexMatch: { input: { $toString: '$_id' }, regex: escaped, options: 'i' } } },
+            ] };
         const orders = await Order.find(orderFilter)
             .populate('userId', 'firstName lastName email')
             .populate('productsOrdered.productId', 'images')

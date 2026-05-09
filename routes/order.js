@@ -15,6 +15,7 @@ router.post('/admin/add-link', verify, verifyAdmin, orderController.generateAddO
 router.get('/add-link/:token', verify, orderController.validateAddOrderToken);
 router.patch('/:orderId/status', verify, verifyAdmin, orderController.updateOrderStatus);
 router.patch('/:orderId/items/:itemId/status', verify, verifyAdmin, orderController.updateOrderItemStatus);
+router.patch('/:orderId/items/:itemId/packed', verify, verifyAdmin, orderController.updateOrderItemPacked);
 router.post('/:orderId/items', verify, verifyAdmin, orderController.addItemToOrder);
 
 module.exports = router;

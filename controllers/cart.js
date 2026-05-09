@@ -6,6 +6,10 @@ const GroupBuyOrder = require('../models/GroupBuyOrder.js');
 const { errorHandler } = require('../auth.js');
 const { toObj } = require('../utils/variantResolution.js');
 
+// Statuses that lock the cart: once admin marks Processing or beyond, the customer
+// can no longer add items via the add-link. Cancelled doesn't lock (already terminal).
+const CART_LOCKED_STATUSES = new Set(['Processing', 'In Production', 'Shipped', 'Delivered']);
+
 // Resolve the family (root + add-on children) of group-buy IDs allowed for a given add-link token.
 // Returns null when the token isn't gb-cart or the family can't be derived (no enforcement).
 async function getAllowedGbFamilyForToken(tokenStr, userId) {
@@ -24,6 +28,26 @@ async function getAllowedGbFamilyForToken(tokenStr, userId) {
     if (!rootId) return null;
     const addOns = await GroupBuy.find({ parentGroupBuyId: rootId }).select('_id');
     return new Set([rootId, ...addOns.map(a => a._id.toString())]);
+}
+
+// Returns true when the order referenced by an add-link is at Processing+.
+// Works for both gb-cart tokens (any order in the cart at Processing+) and order tokens (the in-stock order itself).
+async function isCartLockedByStatus(tokenStr, userId) {
+    if (!tokenStr) return false;
+    const tokenDoc = await OrderAddToken.findOne({ token: tokenStr });
+    if (!tokenDoc || tokenDoc.usedAt || tokenDoc.expiresAt < new Date()) return false;
+    if (tokenDoc.targetUserId.toString() !== userId) return false;
+
+    if (tokenDoc.targetType === 'gb-cart' && tokenDoc.targetCartOrderCode) {
+        const orders = await GroupBuyOrder.find({ cartOrderCode: tokenDoc.targetCartOrderCode }).select('status');
+        return orders.some(o => CART_LOCKED_STATUSES.has(o.status));
+    }
+    if (tokenDoc.targetType === 'order' && tokenDoc.targetOrderId) {
+        const Order = require('../models/Order.js');
+        const order = await Order.findById(tokenDoc.targetOrderId).select('status');
+        return !!(order && CART_LOCKED_STATUSES.has(order.status));
+    }
+    return false;
 }
 
 const recalcTotal = (cartItems) =>
@@ -128,6 +152,11 @@ module.exports.addToCart = async (req, res) => {
         // Customers on a GB add-link can only add items from that group buy family.
         if (await isGbCartTokenActive(addToOrderToken, req.user.id)) {
             return res.status(400).json({ error: 'Your add-link is for a group buy. In-stock items can’t be added to it — only items from your original group buy or its add-ons.' });
+        }
+
+        // In-stock add-link locked once admin marks the order Processing or beyond.
+        if (await isCartLockedByStatus(addToOrderToken, req.user.id)) {
+            return res.status(400).json({ error: 'This order is already being processed and can no longer be modified.' });
         }
 
         const product = await Product.findById(productId);
@@ -591,6 +620,11 @@ module.exports.addGroupBuyToCart = async (req, res) => {
         const allowedFamily = await getAllowedGbFamilyForToken(addToOrderToken, req.user.id);
         if (allowedFamily && !allowedFamily.has(String(groupBuyId))) {
             return res.status(400).json({ error: 'You can only add items from the same group buy (or its add-ons) using this link.' });
+        }
+
+        // Cart locked once admin moves the order to Processing or beyond.
+        if (await isCartLockedByStatus(addToOrderToken, req.user.id)) {
+            return res.status(400).json({ error: 'This order is already being processed and can no longer be modified.' });
         }
 
         const gb = await GroupBuy.findById(groupBuyId);

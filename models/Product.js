@@ -83,6 +83,19 @@ const variantImageSchema = new mongoose.Schema({
     appliesTo: { type: Map, of: String, default: {} }
 }, { _id: true });
 
+// ── Landing-page block (Amazon A+ style) ──
+// Optional admin-built page rendered below the product buy section.
+// `data` shape varies per type and is validated client-side; Mixed lets us add new
+// block types without schema migrations as long as we keep the wrapper shape stable.
+const landingBlockSchema = new mongoose.Schema({
+    type: {
+        type: String,
+        required: true,
+        enum: ['rich-text', 'hero-image', 'two-column']
+    },
+    data: { type: mongoose.Schema.Types.Mixed, default: {} }
+}, { _id: true });
+
 const productSchema = new mongoose.Schema({
     name: { type: String, required: [true, 'Product name is required'], trim: true },
     // Supports markdown: **bold**, *italic*, # headings, - lists, blank lines = paragraphs
@@ -113,7 +126,8 @@ const productSchema = new mongoose.Schema({
     parentProductId: { type: mongoose.Schema.Types.ObjectId, ref: 'Product', default: null, index: true },
     isActive: { type: Boolean, default: true },
     // Queued products are saved as drafts: hidden from customers, editable in admin.
-    isQueued: { type: Boolean, default: false }
+    isQueued: { type: Boolean, default: false },
+    landingPage: { type: [landingBlockSchema], default: [] }
 }, { timestamps: true });
 
 productSchema.index({ name: 'text', description: 'text' });
