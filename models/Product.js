@@ -91,9 +91,11 @@ const landingBlockSchema = new mongoose.Schema({
     type: {
         type: String,
         required: true,
-        enum: ['rich-text', 'hero-image', 'two-column']
+        enum: ['rich-text', 'hero-image', 'two-column', 'gallery', 'video', 'spec-list']
     },
-    data: { type: mongoose.Schema.Types.Mixed, default: {} }
+    data: { type: mongoose.Schema.Types.Mixed, default: {} },
+    // Optional background tint applied by the renderer ('none' | 'muted' | 'dark').
+    bg: { type: String, default: 'none' }
 }, { _id: true });
 
 const productSchema = new mongoose.Schema({
