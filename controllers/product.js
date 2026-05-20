@@ -1,6 +1,19 @@
 const Product = require('../models/Product.js');
+const Cart = require('../models/Cart.js');
 const { errorHandler } = require('../auth.js');
 const cloudinary = require('cloudinary').v2;
+
+// Drop the given product from every regular cart and recompute totals. Past
+// orders snapshot product info on the order line, so they're not affected.
+async function purgeProductFromCarts(productId) {
+    const carts = await Cart.find({ 'cartItems.productId': productId });
+    for (const cart of carts) {
+        cart.cartItems = cart.cartItems.filter(it => String(it.productId) !== String(productId));
+        cart.totalPrice = cart.cartItems.reduce((n, it) => n + (it.subtotal || 0), 0);
+        await cart.save();
+    }
+    return carts.length;
+}
 
 module.exports.createProduct = async (req, res) => {
     try {
@@ -273,7 +286,12 @@ module.exports.archiveProduct = async (req, res) => {
         if (!product) return res.status(404).json({ error: 'Product not found.' });
         if (!product.isActive) return res.status(200).json({ message: 'Product is already archived.' });
         product.isActive = false; await product.save();
-        return res.status(200).json({ message: 'Product archived successfully.' });
+        const removedFrom = await purgeProductFromCarts(product._id);
+        return res.status(200).json({
+            message: removedFrom > 0
+                ? `Product archived. Removed from ${removedFrom} active cart${removedFrom === 1 ? '' : 's'}.`
+                : 'Product archived successfully.'
+        });
     } catch (error) { errorHandler(error, req, res); }
 };
 

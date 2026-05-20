@@ -73,7 +73,13 @@ const variantSchema = new mongoose.Schema({
     stock: { type: Number, default: -1 },
     price: { type: Number, default: null },
     sku: { type: String, default: '' },
-    available: { type: Boolean, default: true }
+    available: { type: Boolean, default: true },
+    // Optional per-row image. Shown when this exact variant is selected.
+    // Falls back to variantImages (appliesTo-based) and then product.images.
+    image: {
+        url: { type: String, default: '' },
+        altText: { type: String, default: '' }
+    }
 }, { _id: true });
 
 // ── Variant image (appliesTo is a partial attrs map; empty = wildcard) ──

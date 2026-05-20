@@ -10,6 +10,7 @@ const orderRoutes = require('./routes/order');
 const groupBuyRoutes = require('./routes/groupBuy');
 const uploadRoutes = require('./routes/upload');
 const homepageRoutes = require('./routes/homepageContent');
+const pageContentRoutes = require('./routes/sectionPageContent');
 const contactRoutes = require('./routes/contact');
 const { errorHandler } = require('./auth');
 
@@ -61,6 +62,7 @@ app.use('/b1/orders', orderRoutes);
 app.use('/b1/group-buys', groupBuyRoutes);
 app.use('/b1/upload', uploadRoutes);
 app.use('/b1/homepage', homepageRoutes);
+app.use('/b1/page-content', pageContentRoutes);
 app.use('/b1/contact', contactRoutes);
 
 // Health check

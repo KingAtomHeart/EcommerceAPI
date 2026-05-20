@@ -3,6 +3,7 @@ const { errorHandler } = require('../auth.js');
 const cloudinary = require('cloudinary').v2;
 
 const WHITELIST = [
+    'blocks',
     'heroImages', 'heroEyebrow', 'heroTitle', 'heroSubtitle',
     'heroPrimaryCtaLabel', 'heroPrimaryCtaLink',
     'heroSecondaryCtaLabel', 'heroSecondaryCtaLink',
@@ -11,11 +12,135 @@ const WHITELIST = [
     'bannerImage', 'bannerLayout'
 ];
 
+// Seed the blocks array from legacy flat fields so admins who customized the
+// homepage before the block refactor don't lose their copy. Runs at most once
+// per doc (only when `blocks` is empty).
+function seedBlocksFromLegacy(doc) {
+    const heroImages = (doc.heroImages || []).map(i => ({ url: i.url, altText: i.altText || '' }));
+    return [
+        {
+            type: 'hero', enabled: true, data: {
+                eyebrow: doc.heroEyebrow || '',
+                title: doc.heroTitle || '',
+                subtitle: doc.heroSubtitle || '',
+                primaryCtaLabel: doc.heroPrimaryCtaLabel || '',
+                primaryCtaLink: doc.heroPrimaryCtaLink || '',
+                secondaryCtaLabel: doc.heroSecondaryCtaLabel || '',
+                secondaryCtaLink: doc.heroSecondaryCtaLink || '',
+                images: heroImages,
+            }
+        },
+        { type: 'categoryStrip', enabled: true, data: {} },
+        {
+            type: 'collection', enabled: true, data: {
+                source: 'products', layout: 'carousel',
+                title: 'Featured Products', subtitle: '',
+                category: '', sort: 'featured', limit: 6, viewAllLink: '/products',
+            }
+        },
+        {
+            type: 'collection', enabled: true, data: {
+                source: 'group-buys', layout: 'grid', columns: 4,
+                gbMode: 'active', limit: 4,
+                title: 'Active Group Buys',
+                subtitle: 'Join production runs for exclusive keyboards and accessories.',
+                viewAllLink: '/group-buys',
+            }
+        },
+        {
+            type: 'collection', enabled: true, data: {
+                source: 'group-buys', layout: 'grid', columns: 4,
+                gbMode: 'interest-check', limit: 4,
+                title: 'Interest Checks',
+                subtitle: 'Help shape what we make next. Show interest — no commitment.',
+                viewAllLink: '/group-buys',
+            }
+        },
+        {
+            type: 'banner', enabled: true, data: {
+                eyebrow: doc.bannerEyebrow || '',
+                title: doc.bannerTitle || '',
+                subtitle: doc.bannerSubtitle || '',
+                ctaLabel: doc.bannerCtaLabel || '',
+                ctaLink: doc.bannerCtaLink || '',
+                image: { url: doc.bannerImage?.url || '', altText: doc.bannerImage?.altText || '' },
+                layout: doc.bannerLayout || 'overlay',
+            }
+        },
+    ];
+}
+
+// Convert a legacy block to the unified `collection` shape. Returns the
+// original block unchanged for already-migrated types (hero, banner,
+// categoryStrip, collection).
+function migrateBlockToCollection(b) {
+    const block = b.toObject ? b.toObject() : { ...b };
+    const data = { ...(block.data || {}) };
+
+    if (block.type === 'productGrid') {
+        return {
+            ...block,
+            type: 'collection',
+            data: {
+                ...data,
+                source: 'products',
+                layout: data.layout === 'grid' ? 'grid' : 'carousel',
+            },
+        };
+    }
+    if (block.type === 'productHero') {
+        return {
+            ...block,
+            type: 'collection',
+            data: {
+                ...data,
+                source: 'products',
+                layout: 'hero',
+                // The legacy productHero block stored single/pair/triple under
+                // `layout`; the unified collection uses `layout: 'hero'` for the
+                // mode and `heroVariant` for the tile count.
+                heroVariant: data.layout || 'pair',
+            },
+        };
+    }
+    if (block.type === 'groupBuys') {
+        return {
+            ...block,
+            type: 'collection',
+            data: {
+                ...data,
+                source: 'group-buys',
+                gbMode: data.mode || 'active',
+                layout: data.layout || 'grid',
+                // Legacy home-card-grid was 4-up; preserve that as the default so
+                // migrated blocks don't shrink from 4 columns to 3.
+                columns: data.columns || 4,
+            },
+        };
+    }
+    return block;
+}
+
 module.exports.getHomepageContent = async (req, res) => {
     try {
         let doc = await HomepageContent.findOne({ singleton: 'homepage' });
         if (!doc) {
             doc = await HomepageContent.create({ singleton: 'homepage' });
+        }
+        if (!doc.blocksInitialized) {
+            doc.blocks = seedBlocksFromLegacy(doc);
+            doc.blocksInitialized = true;
+            await doc.save();
+        }
+        // Lazy migration: convert any legacy block types in stored docs to the
+        // unified `collection` shape. Idempotent — already-migrated blocks pass
+        // through. Only persists when at least one block actually changes.
+        const migratedBlocks = (doc.blocks || []).map(migrateBlockToCollection);
+        const didMigrate = migratedBlocks.some((b, i) => b.type !== doc.blocks[i].type);
+        if (didMigrate) {
+            doc.blocks = migratedBlocks;
+            doc.markModified('blocks');
+            await doc.save();
         }
         return res.status(200).json(doc);
     } catch (error) { errorHandler(error, req, res); }

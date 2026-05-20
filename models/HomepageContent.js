@@ -1,8 +1,35 @@
 const mongoose = require('mongoose');
 
+// Each block is one section of the homepage. Admin can add/remove/reorder.
+// `data` is type-specific and validated client-side; we keep it Mixed so block
+// shapes can evolve without a migration.
+const blockSchema = new mongoose.Schema({
+    type: {
+        type: String,
+        // `collection` is the new unified type that subsumes productGrid,
+        // productHero, and groupBuys — admin picks source + layout inside it.
+        // The old types stay in the enum so legacy docs continue to validate
+        // until the controller migrates them on read.
+        enum: ['hero', 'categoryStrip', 'collection', 'productGrid', 'productHero', 'banner', 'groupBuys'],
+        required: true
+    },
+    enabled: { type: Boolean, default: true },
+    data: { type: mongoose.Schema.Types.Mixed, default: {} }
+}, { _id: true });
+
 const homepageContentSchema = new mongoose.Schema({
     singleton: { type: String, default: 'homepage', unique: true },
 
+    // Modular section list. When empty (legacy doc), the controller lazily seeds
+    // it from the flat fields below so existing copy isn't lost.
+    blocks: [blockSchema],
+
+    // Flips to true the first time we seed `blocks` from the legacy flat fields.
+    // After that, admin can clear all blocks intentionally without us re-seeding.
+    blocksInitialized: { type: Boolean, default: false },
+
+    // Legacy flat fields — kept for the migration seed and as fallbacks. New
+    // edits live in `blocks`; these are no longer the source of truth.
     heroImages: [{
         url: { type: String, required: true },
         altText: { type: String, default: '' }
