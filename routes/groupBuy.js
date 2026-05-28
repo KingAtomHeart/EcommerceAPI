@@ -4,12 +4,16 @@ const gb = require('../controllers/groupBuy.js');
 const { verify, verifyAdmin } = require('../auth.js');
 const { upload, processUploadedImages } = require('../middleware/upload.js');
 
-// Wrap multer for friendly errors
+// Wrap multer for friendly errors. Matches the product route — 20 images per
+// request and a clear message when the limit is exceeded (multer's raw error
+// is "Unexpected field" which isn't actionable).
 const safeUpload = (req, res, next) => {
-    upload.array('images', 5)(req, res, (err) => {
+    upload.array('images', 20)(req, res, (err) => {
         if (err) {
-            if (err.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'File too large. Maximum 10MB per image.' });
-            if (err.code === 'LIMIT_FILE_COUNT') return res.status(400).json({ error: 'Too many files. Maximum 5 images.' });
+            if (err.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'File too large. Maximum 100MB per image.' });
+            if (err.code === 'LIMIT_FILE_COUNT' || err.code === 'LIMIT_UNEXPECTED_FILE') {
+                return res.status(400).json({ error: 'Too many files in one upload. Maximum 20 images per request.' });
+            }
             return res.status(400).json({ error: err.message || 'Image upload failed.' });
         }
         next();

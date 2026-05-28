@@ -12,6 +12,7 @@ const uploadRoutes = require('./routes/upload');
 const homepageRoutes = require('./routes/homepageContent');
 const pageContentRoutes = require('./routes/sectionPageContent');
 const contactRoutes = require('./routes/contact');
+const categoryRoutes = require('./routes/category');
 const { errorHandler } = require('./auth');
 
 const app = express();
@@ -64,6 +65,7 @@ app.use('/b1/upload', uploadRoutes);
 app.use('/b1/homepage', homepageRoutes);
 app.use('/b1/page-content', pageContentRoutes);
 app.use('/b1/contact', contactRoutes);
+app.use('/b1/categories', categoryRoutes);
 
 // Health check
 app.get('/health', (req, res) => res.status(200).json({ status: 'OK' }));

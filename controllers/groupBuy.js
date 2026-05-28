@@ -21,7 +21,7 @@ const generateOrderCode = async () => {
 
 module.exports.createGroupBuy = async (req, res) => {
     try {
-        const { name, description, basePrice, options, configurations, kits, moq, maxOrders, startDate, endDate, category, status, availabilityRules, parentGroupBuyId, isQueued } = req.body;
+        const { name, description, basePrice, options, configurations, kits, moq, maxOrders, startDate, endDate, category, status, availabilityRules, parentGroupBuyId, isQueued, landingPage, customPageHtml, pinnedRelatedIds, pinnedAddOnIds } = req.body;
         if (!name || basePrice == null) return res.status(400).json({ error: 'name and basePrice are required.' });
 
         let resolvedParentId = null;
@@ -43,15 +43,21 @@ module.exports.createGroupBuy = async (req, res) => {
             availabilityRules: availabilityRules || [],
             parentGroupBuyId: resolvedParentId,
             isQueued: !!isQueued,
+            landingPage: Array.isArray(landingPage) ? landingPage : [],
+            customPageHtml: typeof customPageHtml === 'string' ? customPageHtml : '',
+            pinnedRelatedIds: Array.isArray(pinnedRelatedIds) ? pinnedRelatedIds : [],
+            pinnedAddOnIds: Array.isArray(pinnedAddOnIds) ? pinnedAddOnIds : [],
         });
         const saved = await gb.save();
+        // Promote new category strings into Category stubs (see product flow).
+        if (category) require('./category.js').ensureCategoryExists(category).catch(() => {});
         return res.status(201).json(saved);
     } catch (error) { errorHandler(error, req, res); }
 };
 
 module.exports.updateGroupBuy = async (req, res) => {
     try {
-        const allowedFields = ['name', 'description', 'basePrice', 'options', 'configurations', 'kits', 'moq', 'maxOrders', 'startDate', 'endDate', 'category', 'availabilityRules', 'isQueued'];
+        const allowedFields = ['name', 'description', 'basePrice', 'options', 'configurations', 'kits', 'moq', 'maxOrders', 'startDate', 'endDate', 'category', 'availabilityRules', 'isQueued', 'landingPage', 'customPageHtml', 'pinnedRelatedIds', 'pinnedAddOnIds'];
         const updateData = {};
         for (const field of allowedFields) { if (req.body[field] !== undefined) updateData[field] = req.body[field]; }
 
@@ -69,6 +75,9 @@ module.exports.updateGroupBuy = async (req, res) => {
 
         const updated = await GroupBuy.findByIdAndUpdate(req.params.id, updateData, { new: true, runValidators: true });
         if (!updated) return res.status(404).json({ error: 'Group buy not found.' });
+        if (updateData.category) {
+            require('./category.js').ensureCategoryExists(updateData.category).catch(() => {});
+        }
         return res.status(200).json({ message: 'Updated.', groupBuy: updated });
     } catch (error) { errorHandler(error, req, res); }
 };

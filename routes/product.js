@@ -4,12 +4,17 @@ const productController = require('../controllers/product.js');
 const { verify, verifyAdmin } = require('../auth.js');
 const { upload, processUploadedImages } = require('../middleware/upload.js');
 
-// Wrap multer to return friendly error messages
+// Wrap multer to return friendly error messages. Bumped from 5 to 20 since
+// admins routinely upload more reference shots than that per product. The
+// LIMIT_UNEXPECTED_FILE branch covers the 21st file (multer's misleading
+// "Unexpected field" error) so the admin gets an actionable message.
 const safeUpload = (req, res, next) => {
-    upload.array('images', 5)(req, res, (err) => {
+    upload.array('images', 20)(req, res, (err) => {
         if (err) {
-            if (err.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'File too large. Maximum 10MB per image.' });
-            if (err.code === 'LIMIT_FILE_COUNT') return res.status(400).json({ error: 'Too many files. Maximum 5 images.' });
+            if (err.code === 'LIMIT_FILE_SIZE') return res.status(413).json({ error: 'File too large. Maximum 100MB per image.' });
+            if (err.code === 'LIMIT_FILE_COUNT' || err.code === 'LIMIT_UNEXPECTED_FILE') {
+                return res.status(400).json({ error: 'Too many files in one upload. Maximum 20 images per request.' });
+            }
             return res.status(400).json({ error: err.message || 'Image upload failed.' });
         }
         next();

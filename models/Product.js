@@ -62,9 +62,14 @@ const kitSchema = new mongoose.Schema({
 }, { _id: true });
 
 // ── Variant dimensions ──
+// Values were originally bare strings (["Red", "Blue"]). They now store the
+// price modifier alongside the value so each dimension's pills can show their
+// own +/-₱ contribution to the total. Legacy bare-string entries are
+// auto-upgraded to { value, priceModifier: 0 } in the pre-save hook below, and
+// the frontend tolerates either shape via a normaliser helper.
 const variantDimensionSchema = new mongoose.Schema({
     name: { type: String, required: true },
-    values: [{ type: String, required: true }]
+    values: { type: [mongoose.Schema.Types.Mixed], default: [] }
 }, { _id: true });
 
 // ── Variant row (one sellable SKU) ──
@@ -97,7 +102,9 @@ const landingBlockSchema = new mongoose.Schema({
     type: {
         type: String,
         required: true,
-        enum: ['rich-text', 'hero-image', 'two-column', 'gallery', 'video', 'spec-list']
+        // 'columns' = multi-column headed-list grid (vendors/timeline/price/contents style).
+        // 'products' = embedded in-stock product + group-buy buy-card grid.
+        enum: ['rich-text', 'hero-image', 'two-column', 'gallery', 'video', 'spec-list', 'columns', 'products']
     },
     data: { type: mongoose.Schema.Types.Mixed, default: {} },
     // Optional background tint applied by the renderer ('none' | 'muted' | 'dark').
@@ -135,7 +142,15 @@ const productSchema = new mongoose.Schema({
     isActive: { type: Boolean, default: true },
     // Queued products are saved as drafts: hidden from customers, editable in admin.
     isQueued: { type: Boolean, default: false },
-    landingPage: { type: [landingBlockSchema], default: [] }
+    landingPage: { type: [landingBlockSchema], default: [] },
+    // Raw HTML/CSS pasted by the admin, rendered below the buy section. Wins
+    // over landingPage when set — used for hand-coded flagship pages where
+    // the block editor can't get to the right look. Trusted-admin input only.
+    customPageHtml: { type: String, default: '' },
+    // Admin-curated cross-sell. Empty array = auto-pick from same category /
+    // child products. Non-empty = use these in this order.
+    pinnedRelatedIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product' }],
+    pinnedAddOnIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product' }]
 }, { timestamps: true });
 
 productSchema.index({ name: 'text', description: 'text' });
@@ -154,6 +169,25 @@ productSchema.pre('validate', function (next) {
                 };
             }
             return r;
+        });
+    }
+    // Upgrade legacy bare-string dimension values to { value, priceModifier }
+    // objects so the rest of the codebase can assume the object shape.
+    if (Array.isArray(this.variantDimensions)) {
+        this.variantDimensions = this.variantDimensions.map(dim => {
+            if (!dim) return dim;
+            const values = Array.isArray(dim.values) ? dim.values : [];
+            const normalised = values.map(v => {
+                if (typeof v === 'string') return { value: v, priceModifier: 0 };
+                if (v && typeof v === 'object') {
+                    return {
+                        value: String(v.value ?? ''),
+                        priceModifier: Number(v.priceModifier) || 0,
+                    };
+                }
+                return null;
+            }).filter(v => v && v.value);
+            return { ...(dim.toObject ? dim.toObject() : dim), values: normalised };
         });
     }
     next();

@@ -1,5 +1,6 @@
 const Product = require('../models/Product.js');
 const Cart = require('../models/Cart.js');
+const { ensureCategoryExists } = require('./category.js');
 const { errorHandler } = require('../auth.js');
 const cloudinary = require('cloudinary').v2;
 
@@ -30,6 +31,10 @@ module.exports.createProduct = async (req, res) => {
             isQueued: !!isQueued,
         });
         const saved = await newProduct.save();
+        // Promote new category strings into Category stubs so the strip and
+        // dropdowns pick them up without the admin having to register them
+        // first. Fire-and-forget — failure here shouldn't block the create.
+        if (category) ensureCategoryExists(category).catch(() => {});
         return res.status(201).json(saved);
     } catch (error) { errorHandler(error, req, res); }
 };
@@ -124,16 +129,23 @@ module.exports.retrieveSingleProduct = async (req, res) => {
     } catch (error) { errorHandler(error, req, res); }
 };
 
-// Update — supports name, description, price, stocks, category, options, configurations, kits, variant fields
+// Update — supports name, description, price, stocks, category, options, configurations, kits, variant fields.
+// Uses findById + save() rather than findByIdAndUpdate so subdoc init runs:
+// findByIdAndUpdate skips schema cast hooks for nested fields like variant.attributes
+// (Map type), which silently dropped variants on save. The save() path goes
+// through the schema and converts plain objects into Maps correctly.
 module.exports.updateProduct = async (req, res) => {
     try {
-        const allowed = ['name', 'description', 'price', 'stocks', 'category', 'options', 'configurations', 'configAvailabilityRules', 'kits', 'specifications', 'useVariants', 'variantDimensions', 'variants', 'variantImages', 'parentProductId', 'isQueued', 'landingPage'];
-        const updateData = {};
-        for (const field of allowed) {
-            if (req.body[field] !== undefined) updateData[field] = req.body[field];
+        const allowed = ['name', 'description', 'price', 'stocks', 'category', 'options', 'configurations', 'configAvailabilityRules', 'kits', 'specifications', 'useVariants', 'variantDimensions', 'variants', 'variantImages', 'parentProductId', 'isQueued', 'landingPage', 'customPageHtml', 'pinnedRelatedIds', 'pinnedAddOnIds'];
+        const product = await Product.findById(req.params.productId);
+        if (!product) return res.status(404).json({ error: 'Product not found.' });
+        if (req.body.category && req.body.category !== product.category) {
+            ensureCategoryExists(req.body.category).catch(() => {});
         }
-        const updated = await Product.findByIdAndUpdate(req.params.productId, updateData, { new: true, runValidators: true });
-        if (!updated) return res.status(404).json({ error: 'Product not found.' });
+        for (const field of allowed) {
+            if (req.body[field] !== undefined) product[field] = req.body[field];
+        }
+        const updated = await product.save();
         return res.status(200).json({ message: 'Product updated successfully.', product: updated });
     } catch (error) { errorHandler(error, req, res); }
 };

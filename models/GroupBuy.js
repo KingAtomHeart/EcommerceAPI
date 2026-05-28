@@ -51,6 +51,20 @@ const kitSchema = new mongoose.Schema({
     available: { type: Boolean, default: true }
 }, { _id: true });
 
+// Landing-page block (Amazon A+ style) — same shape as Product.landingPage so
+// the customer-side LandingPageRenderer can render either kind interchangeably.
+// `data` is Mixed because the shape varies per block type (validated client-side).
+const landingBlockSchema = new mongoose.Schema({
+    type: {
+        type: String,
+        required: true,
+        // Keep this enum in sync with Product.landingPage so renderers can be shared.
+        enum: ['rich-text', 'hero-image', 'two-column', 'gallery', 'video', 'spec-list', 'columns', 'products']
+    },
+    data: { type: mongoose.Schema.Types.Mixed, default: {} },
+    bg: { type: String, default: 'none' }
+}, { _id: true });
+
 const interestSchema = new mongoose.Schema({
     userId: { type: mongoose.Schema.Types.ObjectId, ref: 'User', required: true },
     email: { type: String, required: true },
@@ -98,7 +112,17 @@ const groupBuySchema = new mongoose.Schema({
     isActive: { type: Boolean, default: true },
     // Queued group buys are saved as drafts: hidden from customers, editable in admin.
     isQueued: { type: Boolean, default: false },
-    parentGroupBuyId: { type: mongoose.Schema.Types.ObjectId, ref: 'GroupBuy', default: null }
+    parentGroupBuyId: { type: mongoose.Schema.Types.ObjectId, ref: 'GroupBuy', default: null },
+    // Optional admin-built marketing page rendered below the buy section.
+    landingPage: { type: [landingBlockSchema], default: [] },
+    // Raw HTML/CSS pasted by the admin. Same purpose as on Product —
+    // trusted-admin escape hatch for flagship pages.
+    customPageHtml: { type: String, default: '' },
+    // Admin-curated cross-sell. Mirrors Product so the two surfaces stay in
+    // sync. Lists can mix products + group buys via the same id slot — the
+    // customer page resolves each id against both collections.
+    pinnedRelatedIds: [{ type: mongoose.Schema.Types.ObjectId }],
+    pinnedAddOnIds: [{ type: mongoose.Schema.Types.ObjectId }]
 }, { timestamps: true });
 
 module.exports = mongoose.model('GroupBuy', groupBuySchema);
