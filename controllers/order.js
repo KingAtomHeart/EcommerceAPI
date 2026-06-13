@@ -210,7 +210,7 @@ module.exports.createOrder = async (req, res) => {
                         }
                     }
                 }
-                gb.orderCount += 1;
+                gb.orderCount += (item.quantity || 1);
                 await gb.save();
                 orders.push(order);
             }
@@ -569,7 +569,7 @@ module.exports.checkoutGroupBuy = async (req, res) => {
                 }
             }
 
-            gb.orderCount += 1;
+            gb.orderCount += (item.quantity || 1);
             await gb.save();
             orders.push(order);
         }
@@ -1291,6 +1291,158 @@ module.exports.updateOrderStatus = async (req, res) => {
         }
 
         return res.status(200).json({ message: 'Order status updated.', order });
+    } catch (error) {
+        errorHandler(error, req, res);
+    }
+};
+
+
+// CSV export: every line item across every Order that contains a given
+// productId. Output is one row per LINE ITEM (not per order) — the column
+// the manufacturer cares about is "how many of variant X / option Y do I
+// need to produce". Cancelled items are listed too with their status so
+// admin can sanity-check totals. Notes-style fields (mobile, address) are
+// included so the same CSV can drive a shipping run if needed.
+module.exports.exportProductOrdersCSV = async (req, res) => {
+    try {
+        const Product = require('../models/Product.js');
+        const { productId } = req.params;
+        const product = await Product.findById(productId);
+        if (!product) return res.status(404).json({ error: 'Product not found.' });
+
+        // Pull every order containing this product. Mongo's $elemMatch isn't
+        // needed since the productId field on the subdoc is queryable directly.
+        const orders = await require('../models/Order.js')
+            .find({ 'productsOrdered.productId': productId })
+            .populate('userId', 'firstName lastName email mobileNo')
+            .sort({ createdAt: 1 });
+
+        const esc = (v) => {
+            const s = String(v ?? '');
+            return (s.includes(',') || s.includes('"') || s.includes('\n'))
+                ? `"${s.replace(/"/g, '""')}"`
+                : s;
+        };
+
+        // Column set — chosen for manufacturer workflow:
+        //   Order ref + date + customer block (so a returned/disputed item is
+        //   traceable), then the production-relevant block (option, variant
+        //   attrs, configurations, quantity), then shipping block.
+        // Variants column flattens the Map: "Color: Red | Weight: Silver".
+        // Configurations flattens to "Plate: Brass | Layout: ANSI".
+        // Unit Price is back-computed from subtotal/quantity so legacy items
+        // without a stored unit price still produce a useful number.
+        // BOM Summary at the end pivots the per-line data into a totals
+        // block so manufacturers can read "total units to make per variant"
+        // without spinning up a pivot table — appended as comment rows.
+        const headers = [
+            'Order Number', 'Order Date', 'Item Status', 'Packed',
+            'Customer Name', 'Email', 'Phone',
+            'Ship To', 'Ship Phone', 'Street', 'City', 'Province', 'Postal Code',
+            'Product', 'Selected Option', 'Variant', 'Configurations',
+            'Quantity', 'Unit Price', 'Subtotal',
+            'Added After Purchase', 'Order Total', 'Order Status', 'Payment Status',
+        ];
+
+        const rows = [];
+        // Pivot key → quantity, used for the BOM totals block at the bottom.
+        const bomTotals = new Map();
+        const bomKey = (item) => {
+            const opt = item.selectedOption?.value || '';
+            const attrs = item.variantAttributes
+                ? (typeof item.variantAttributes.entries === 'function'
+                    ? [...item.variantAttributes.entries()]
+                    : Object.entries(item.variantAttributes))
+                : [];
+            const variant = attrs.map(([k, v]) => `${k}: ${v}`).join(' | ');
+            const cfg = (item.configurations || []).map(c => `${c.name}: ${c.selected}`).join(' | ');
+            return [opt, variant, cfg].filter(Boolean).join(' · ') || '(no options)';
+        };
+
+        for (const o of orders) {
+            const u = o.userId;
+            const addr = o.shippingAddress || {};
+            // Filter to just THIS product's line items (an order can contain
+            // many distinct products; we export the slice for this product).
+            const items = (o.productsOrdered || []).filter(p =>
+                String(p.productId?._id || p.productId) === String(productId)
+            );
+            for (const item of items) {
+                const attrs = item.variantAttributes
+                    ? (typeof item.variantAttributes.entries === 'function'
+                        ? [...item.variantAttributes.entries()]
+                        : Object.entries(item.variantAttributes))
+                    : [];
+                const variantStr = attrs.map(([k, v]) => `${k}: ${v}`).join(' | ');
+                const cfgStr = (item.configurations || [])
+                    .map(c => `${c.name}: ${c.selected}`).join(' | ');
+                const optStr = item.selectedOption?.value
+                    ? `${item.selectedOption.groupName || ''}${item.selectedOption.groupName ? ': ' : ''}${item.selectedOption.value}`
+                    : '';
+                const qty = Number(item.quantity) || 0;
+                const subtotal = Number(item.subtotal) || 0;
+                const unitPrice = qty > 0 ? Math.round((subtotal / qty) * 100) / 100 : '';
+
+                // Active items only count toward the BOM (cancelled = not produced).
+                if (item.status !== 'Cancelled') {
+                    const key = bomKey(item);
+                    bomTotals.set(key, (bomTotals.get(key) || 0) + qty);
+                }
+
+                rows.push([
+                    o.orderNumber || String(o._id),
+                    new Date(o.createdAt).toLocaleDateString(),
+                    item.status || 'Pending',
+                    item.packed ? 'Yes' : '',
+                    typeof u === 'object' && u ? `${u.firstName || ''} ${u.lastName || ''}`.trim() : 'Unknown',
+                    typeof u === 'object' && u ? (u.email || '') : '',
+                    typeof u === 'object' && u ? (u.mobileNo || '') : '',
+                    addr.fullName || '', addr.phone || '',
+                    addr.street || '', addr.city || '', addr.province || '', addr.postalCode || '',
+                    item.productName || product.name,
+                    optStr, variantStr, cfgStr,
+                    qty, unitPrice, subtotal,
+                    item.addedAfterPurchase ? 'Yes' : '',
+                    o.totalPrice ?? '', o.status || '', o.paymentStatus || '',
+                ]);
+            }
+        }
+
+        // Build the BOM (bill-of-materials) totals block — appended after a
+        // blank row so spreadsheet apps display it as a clearly separate
+        // section. Each row is "Variant/Option spec, total units to produce".
+        const bomRows = [];
+        if (bomTotals.size > 0) {
+            bomRows.push([]); // blank separator
+            const labelRow = new Array(headers.length).fill('');
+            labelRow[1] = 'PRODUCTION TOTALS (active items only)';
+            labelRow[17] = 'Quantity';
+            bomRows.push(labelRow);
+            const sorted = [...bomTotals.entries()].sort((a, b) => b[1] - a[1]);
+            for (const [spec, qty] of sorted) {
+                const row = new Array(headers.length).fill('');
+                row[13] = product.name; // Product column
+                row[14] = spec;          // doubles as the "spec" column for the BOM block
+                row[17] = qty;           // Quantity column
+                bomRows.push(row);
+            }
+            const grandTotal = [...bomTotals.values()].reduce((s, n) => s + n, 0);
+            const totalRow = new Array(headers.length).fill('');
+            totalRow[13] = 'GRAND TOTAL';
+            totalRow[17] = grandTotal;
+            bomRows.push(totalRow);
+        }
+
+        const allRows = [...rows, ...bomRows];
+        const csv = [
+            headers.map(esc).join(','),
+            ...allRows.map(r => r.map(esc).join(',')),
+        ].join('\n');
+
+        const filename = `${(product.name || 'product').replace(/[^a-zA-Z0-9]/g, '_')}_orders.csv`;
+        res.setHeader('Content-Type', 'text/csv');
+        res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+        return res.status(200).send(csv);
     } catch (error) {
         errorHandler(error, req, res);
     }

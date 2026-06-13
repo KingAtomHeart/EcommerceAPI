@@ -36,7 +36,15 @@ const categorySchema = new mongoose.Schema({
     // Admin-curated lists. Each is an array of ids that map to the relevant
     // Product or GroupBuy collection. Stored as ObjectId so populate works.
     pinnedProductIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'Product' }],
-    pinnedGroupBuyIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'GroupBuy' }]
+    pinnedGroupBuyIds: [{ type: mongoose.Schema.Types.ObjectId, ref: 'GroupBuy' }],
+    // Rich page content rendered between the hero and the product grid.
+    // Same block schema as Product.landingPage so admins can drop in Hero,
+    // Banner, Text+Image, Gallery, or Feature-grid sections without learning
+    // a new editor. Mixed because each block carries its own arbitrary data.
+    landingPage: { type: [mongoose.Schema.Types.Mixed], default: [] },
+    // Optional raw HTML escape hatch. Rendered at the bottom of the page —
+    // useful for one-off promo callouts or campaign-specific markup.
+    customPageHtml: { type: String, default: '' }
 }, { timestamps: true });
 
 // Normalise slug on save so admins can type "Desk Accessories" and the

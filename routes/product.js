@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const productController = require('../controllers/product.js');
+const orderController = require('../controllers/order.js');
 const { verify, verifyAdmin } = require('../auth.js');
 const { upload, processUploadedImages } = require('../middleware/upload.js');
 
@@ -38,6 +39,10 @@ router.get('/all', verify, verifyAdmin, productController.retrieveAllProducts);
 router.patch('/:productId/update', verify, verifyAdmin, productController.updateProduct);
 router.patch('/:productId/archive', verify, verifyAdmin, productController.archiveProduct);
 router.patch('/:productId/activate', verify, verifyAdmin, productController.activateProduct);
+// Manufacturer-friendly CSV of every line item for a given product, plus a
+// production-totals (BOM) block at the bottom. Static sub-path placed before
+// the catch-all /:productId so it doesn't get swallowed.
+router.get('/:productId/export-orders-csv', verify, verifyAdmin, orderController.exportProductOrdersCSV);
 
 // Public Routes
 router.get('/active', productController.retrieveAllActive);

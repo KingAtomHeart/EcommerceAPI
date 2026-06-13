@@ -39,6 +39,36 @@ const optionGroupSchema = new mongoose.Schema({
     values: [optionValueSchema]
 }, { _id: true });
 
+// ── Variant dimensions ──
+// Mirrors Product.variantDimensions exactly so the admin UI + customer
+// rendering can share helpers. Values store { value, priceModifier } objects
+// (legacy bare-string entries auto-upgrade in pre-validate below).
+const variantDimensionSchema = new mongoose.Schema({
+    name: { type: String, required: true },
+    values: { type: [mongoose.Schema.Types.Mixed], default: [] }
+}, { _id: true });
+
+// ── Variant row (one sellable SKU). Per-variant price acts as an additive
+// override on top of base + sum(value modifiers). ──
+const variantSchema = new mongoose.Schema({
+    attributes: { type: Map, of: String, required: true },
+    stock: { type: Number, default: -1 },
+    price: { type: Number, default: null },
+    sku: { type: String, default: '' },
+    available: { type: Boolean, default: true },
+    image: {
+        url: { type: String, default: '' },
+        altText: { type: String, default: '' }
+    }
+}, { _id: true });
+
+// ── Variant image (appliesTo is a partial attrs map; empty = wildcard) ──
+const variantImageSchema = new mongoose.Schema({
+    url: { type: String, required: true },
+    publicId: { type: String, default: '' },
+    appliesTo: { type: Map, of: String, default: {} }
+}, { _id: true });
+
 // Legacy kit schema — retained for backward compatibility with existing orders/interest checks.
 const kitSchema = new mongoose.Schema({
     name: { type: String, required: true, trim: true },
@@ -63,6 +93,25 @@ const landingBlockSchema = new mongoose.Schema({
     },
     data: { type: mongoose.Schema.Types.Mixed, default: {} },
     bg: { type: String, default: 'none' }
+}, { _id: true });
+
+// Milestone reward unlocked when orderCount reaches `count`. Now mirrors a
+// mini-product page: rich-text description, optional landing-page blocks,
+// and an image. Customer view shows an overlay on hover and a full modal
+// (description + landing blocks) on click.
+const milestoneSchema = new mongoose.Schema({
+    count: { type: Number, required: true, min: 1 },
+    title: { type: String, required: true, trim: true },
+    description: { type: String, trim: true, default: '' },
+    landingPage: { type: [landingBlockSchema], default: [] },
+    // Raw HTML/CSS — same escape hatch as Product.customPageHtml. When set,
+    // overrides landingPage in the customer-side milestone modal. Trusted-
+    // admin content only (rendered via dangerouslySetInnerHTML).
+    customPageHtml: { type: String, default: '' },
+    image: {
+        url: { type: String, default: '' },
+        altText: { type: String, default: '' }
+    }
 }, { _id: true });
 
 const interestSchema = new mongoose.Schema({
@@ -104,6 +153,11 @@ const groupBuySchema = new mongoose.Schema({
         default: 'interest-check'
     },
     moq: { type: Number, default: 0 },
+    milestones: { type: [milestoneSchema], default: [] },
+    // Tri-state: undefined = auto (hide on add-ons, show on standalone GBs).
+    // Admin can flip true/false to override per-GB. Renderer falls back to
+    // the auto rule when the field is missing.
+    showMoqProgress: { type: Boolean, default: undefined },
     maxOrders: { type: Number, default: 0 },
     startDate: { type: Date },
     endDate: { type: Date },
@@ -113,6 +167,21 @@ const groupBuySchema = new mongoose.Schema({
     // Queued group buys are saved as drafts: hidden from customers, editable in admin.
     isQueued: { type: Boolean, default: false },
     parentGroupBuyId: { type: mongoose.Schema.Types.ObjectId, ref: 'GroupBuy', default: null },
+    // Per-product spec rows (Layout, Weight, etc.) — same shape as Product.
+    specifications: {
+        type: [{
+            label: { type: String, required: true, trim: true },
+            value: { type: String, required: true, trim: true }
+        }],
+        default: []
+    },
+    // Variant matrix support — mirrors Product. When useVariants=true, the
+    // customer page renders dimension pills + price modifiers + per-variant
+    // stock instead of (or alongside) the legacy `options` selector.
+    useVariants: { type: Boolean, default: false },
+    variantDimensions: [variantDimensionSchema],
+    variants: [variantSchema],
+    variantImages: [variantImageSchema],
     // Optional admin-built marketing page rendered below the buy section.
     landingPage: { type: [landingBlockSchema], default: [] },
     // Raw HTML/CSS pasted by the admin. Same purpose as on Product —
@@ -124,5 +193,29 @@ const groupBuySchema = new mongoose.Schema({
     pinnedRelatedIds: [{ type: mongoose.Schema.Types.ObjectId }],
     pinnedAddOnIds: [{ type: mongoose.Schema.Types.ObjectId }]
 }, { timestamps: true });
+
+// Normalise legacy bare-string dimension values to { value, priceModifier }
+// objects so the rest of the codebase can assume the object shape. Mirrors
+// the equivalent hook on Product.
+groupBuySchema.pre('validate', function (next) {
+    if (Array.isArray(this.variantDimensions)) {
+        this.variantDimensions = this.variantDimensions.map(dim => {
+            if (!dim) return dim;
+            const values = Array.isArray(dim.values) ? dim.values : [];
+            const normalised = values.map(v => {
+                if (typeof v === 'string') return { value: v, priceModifier: 0 };
+                if (v && typeof v === 'object') {
+                    return {
+                        value: String(v.value ?? ''),
+                        priceModifier: Number(v.priceModifier) || 0,
+                    };
+                }
+                return null;
+            }).filter(v => v && v.value);
+            return { ...(dim.toObject ? dim.toObject() : dim), values: normalised };
+        });
+    }
+    next();
+});
 
 module.exports = mongoose.model('GroupBuy', groupBuySchema);

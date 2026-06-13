@@ -21,7 +21,14 @@ const generateOrderCode = async () => {
 
 module.exports.createGroupBuy = async (req, res) => {
     try {
-        const { name, description, basePrice, options, configurations, kits, moq, maxOrders, startDate, endDate, category, status, availabilityRules, parentGroupBuyId, isQueued, landingPage, customPageHtml, pinnedRelatedIds, pinnedAddOnIds } = req.body;
+        const {
+            name, description, basePrice, options, configurations, kits,
+            moq, maxOrders, startDate, endDate, category, status,
+            availabilityRules, parentGroupBuyId, isQueued,
+            landingPage, customPageHtml, pinnedRelatedIds, pinnedAddOnIds,
+            specifications, useVariants, variantDimensions, variants, variantImages,
+            milestones, showMoqProgress,
+        } = req.body;
         if (!name || basePrice == null) return res.status(400).json({ error: 'name and basePrice are required.' });
 
         let resolvedParentId = null;
@@ -47,6 +54,13 @@ module.exports.createGroupBuy = async (req, res) => {
             customPageHtml: typeof customPageHtml === 'string' ? customPageHtml : '',
             pinnedRelatedIds: Array.isArray(pinnedRelatedIds) ? pinnedRelatedIds : [],
             pinnedAddOnIds: Array.isArray(pinnedAddOnIds) ? pinnedAddOnIds : [],
+            specifications: Array.isArray(specifications) ? specifications : [],
+            useVariants: !!useVariants,
+            variantDimensions: Array.isArray(variantDimensions) ? variantDimensions : [],
+            variants: Array.isArray(variants) ? variants : [],
+            variantImages: Array.isArray(variantImages) ? variantImages : [],
+            milestones: Array.isArray(milestones) ? milestones : [],
+            ...(typeof showMoqProgress === 'boolean' ? { showMoqProgress } : {}),
         });
         const saved = await gb.save();
         // Promote new category strings into Category stubs (see product flow).
@@ -57,7 +71,7 @@ module.exports.createGroupBuy = async (req, res) => {
 
 module.exports.updateGroupBuy = async (req, res) => {
     try {
-        const allowedFields = ['name', 'description', 'basePrice', 'options', 'configurations', 'kits', 'moq', 'maxOrders', 'startDate', 'endDate', 'category', 'availabilityRules', 'isQueued', 'landingPage', 'customPageHtml', 'pinnedRelatedIds', 'pinnedAddOnIds'];
+        const allowedFields = ['name', 'description', 'basePrice', 'options', 'configurations', 'kits', 'moq', 'maxOrders', 'startDate', 'endDate', 'category', 'availabilityRules', 'isQueued', 'landingPage', 'customPageHtml', 'pinnedRelatedIds', 'pinnedAddOnIds', 'specifications', 'useVariants', 'variantDimensions', 'variants', 'variantImages', 'milestones', 'showMoqProgress'];
         const updateData = {};
         for (const field of allowedFields) { if (req.body[field] !== undefined) updateData[field] = req.body[field]; }
 
@@ -73,8 +87,34 @@ module.exports.updateGroupBuy = async (req, res) => {
             }
         }
 
-        const updated = await GroupBuy.findByIdAndUpdate(req.params.id, updateData, { new: true, runValidators: true });
-        if (!updated) return res.status(404).json({ error: 'Group buy not found.' });
+        // findByIdAndUpdate silently drops Map fields on variant.attributes
+        // (Mongoose quirk — same issue we hit on Product.update). Switch to
+        // findById + save() when variants are in the patch so the matrix
+        // actually persists.
+        // `showMoqProgress: null` means "clear back to auto mode" — translate
+        // it into an $unset so the field returns to undefined (the renderer
+        // then falls back to the auto rule: hide on add-ons, show otherwise).
+        let unsetOps = null;
+        if (updateData.showMoqProgress === null) {
+            unsetOps = { showMoqProgress: '' };
+            delete updateData.showMoqProgress;
+        }
+
+        const touchesVariants = ['useVariants', 'variantDimensions', 'variants', 'variantImages'].some(k => updateData[k] !== undefined);
+        let updated;
+        if (touchesVariants) {
+            const gb = await GroupBuy.findById(req.params.id);
+            if (!gb) return res.status(404).json({ error: 'Group buy not found.' });
+            for (const k of Object.keys(updateData)) gb[k] = updateData[k];
+            if (unsetOps) gb.showMoqProgress = undefined;
+            updated = await gb.save();
+        } else {
+            const patch = { ...updateData };
+            const opts = { new: true, runValidators: true };
+            const update = unsetOps ? { $set: patch, $unset: unsetOps } : patch;
+            updated = await GroupBuy.findByIdAndUpdate(req.params.id, update, opts);
+            if (!updated) return res.status(404).json({ error: 'Group buy not found.' });
+        }
         if (updateData.category) {
             require('./category.js').ensureCategoryExists(updateData.category).catch(() => {});
         }
@@ -371,7 +411,10 @@ module.exports.placeOrder = async (req, res) => {
             notes: notes || ''
         });
         await order.save();
-        gb.orderCount += 1;
+        // orderCount tracks UNITS (not number of distinct orders) so the MOQ
+        // progress bar reflects actual demand — buying 5 of one SKU counts as
+        // 5 toward the MOQ. Cancel paths subtract the same `quantity`.
+        gb.orderCount += (quantity || 1);
 
         // Decrement option value stock if tracked
         if (optionGroupId && optionValueId) {
@@ -479,7 +522,7 @@ module.exports.addItemToCartOrder = async (req, res) => {
                 if (val.stocks === 0) val.available = false;
             }
         }
-        gb.orderCount += 1;
+        gb.orderCount += (quantity || 1);
         await gb.save();
 
         return res.status(201).json({ message: 'Item added to order.', order });
@@ -496,7 +539,8 @@ module.exports.updateOrderStatus = async (req, res) => {
         const order = await GroupBuyOrder.findById(req.params.orderId);
         if (!order) return res.status(404).json({ error: 'Order not found.' });
 
-        // Restock when transitioning INTO Cancelled (one-shot; skip if already Cancelled)
+        // Restock + decrement MOQ progress when transitioning INTO Cancelled
+        // (treat as refund). Symmetric reverse runs below when un-cancelling.
         if (status === 'Cancelled' && order.status !== 'Cancelled') {
             const gb = await GroupBuy.findById(order.groupBuyId);
             if (gb) {
@@ -510,7 +554,27 @@ module.exports.updateOrderStatus = async (req, res) => {
                         }
                     }
                 }
-                gb.orderCount = Math.max(0, (gb.orderCount || 1) - 1);
+                gb.orderCount = Math.max(0, (gb.orderCount || 0) - (order.quantity || 1));
+                await gb.save();
+            }
+        }
+        // Reverse on un-cancel so MOQ progress + stocks stay accurate when
+        // admin flips an order back from Cancelled. Counts units, mirroring
+        // the add-to-cart increments.
+        if (status !== 'Cancelled' && order.status === 'Cancelled') {
+            const gb = await GroupBuy.findById(order.groupBuyId);
+            if (gb) {
+                if (order.selectedOption?.value && gb.options?.length > 0) {
+                    for (const grp of gb.options) {
+                        if (grp.name !== order.selectedOption.groupName) continue;
+                        const val = grp.values.find(v => v.value === order.selectedOption.value);
+                        if (val && val.stocks >= 0) {
+                            val.stocks = Math.max(0, val.stocks - (order.quantity || 1));
+                            if (val.stocks === 0) val.available = false;
+                        }
+                    }
+                }
+                gb.orderCount = (gb.orderCount || 0) + (order.quantity || 1);
                 await gb.save();
             }
         }
@@ -549,6 +613,7 @@ module.exports.updateCartOrderStatus = async (req, res) => {
         if (orders.length === 0) return res.status(404).json({ error: 'No orders found for this cart.' });
 
         for (const order of orders) {
+            // Cancel (refund): restock + decrement MOQ progress
             if (status === 'Cancelled' && order.status !== 'Cancelled') {
                 const gb = await GroupBuy.findById(order.groupBuyId);
                 if (gb) {
@@ -562,7 +627,25 @@ module.exports.updateCartOrderStatus = async (req, res) => {
                             }
                         }
                     }
-                    gb.orderCount = Math.max(0, (gb.orderCount || 1) - 1);
+                    gb.orderCount = Math.max(0, (gb.orderCount || 0) - (order.quantity || 1));
+                    await gb.save();
+                }
+            }
+            // Un-cancel: reverse so MOQ + stocks stay accurate. Counts units.
+            if (status !== 'Cancelled' && order.status === 'Cancelled') {
+                const gb = await GroupBuy.findById(order.groupBuyId);
+                if (gb) {
+                    if (order.selectedOption?.value && gb.options?.length > 0) {
+                        for (const grp of gb.options) {
+                            if (grp.name !== order.selectedOption.groupName) continue;
+                            const val = grp.values.find(v => v.value === order.selectedOption.value);
+                            if (val && val.stocks >= 0) {
+                                val.stocks = Math.max(0, val.stocks - (order.quantity || 1));
+                                if (val.stocks === 0) val.available = false;
+                            }
+                        }
+                    }
+                    gb.orderCount = (gb.orderCount || 0) + (order.quantity || 1);
                     await gb.save();
                 }
             }
@@ -651,6 +734,19 @@ module.exports.exportOrdersCSV = async (req, res) => {
         ];
 
         const rows = [];
+        // Pivot key (selectedOption + configs) → quantity for the BOM block.
+        // Mirrors the in-stock product CSV's production-totals strategy so
+        // manufacturers see one consistent footer format across both flows.
+        const bomTotals = new Map();
+        const bomKey = (item, gbName) => {
+            const opt = item.selectedOption?.value
+                ? `${item.selectedOption.groupName || ''}${item.selectedOption.groupName ? ': ' : ''}${item.selectedOption.value}`
+                : '';
+            const cfg = (item.configurations || []).map(c => `${c.name}: ${c.selected}`).join(' | ');
+            const spec = [opt, cfg].filter(Boolean).join(' · ') || '(no options)';
+            return `${gbName} — ${spec}`;
+        };
+
         for (const [, items] of cartGroups) {
             // Find parent order in this cart (the one whose GB has no parent). If none,
             // use the first order as primary (legacy / standalone add-on edge case).
@@ -683,6 +779,15 @@ module.exports.exportOrdersCSV = async (req, res) => {
             const cartStatus = allSameStatus ? items[0].status : 'Mixed';
             const allNotes = items.filter(i => i.notes?.trim()).map(i => `${i.groupBuyId?.name || ''}: ${i.notes}`).join(' | ');
 
+            // Tally every non-cancelled line item (main + add-ons) into the BOM.
+            // Cancelled items don't get produced so they're excluded.
+            for (const item of items) {
+                if (item.status === 'Cancelled') continue;
+                const gbName = item.groupBuyId?.name || gb.name;
+                const key = bomKey(item, gbName);
+                bomTotals.set(key, (bomTotals.get(key) || 0) + (item.quantity || 0));
+            }
+
             rows.push([
                 main.cartOrderCode || main.orderCode,
                 new Date(main.createdAt).toLocaleDateString(),
@@ -698,7 +803,33 @@ module.exports.exportOrdersCSV = async (req, res) => {
             ]);
         }
 
-        const csv = [headers.map(esc).join(','), ...rows.map(r => r.map(esc).join(','))].join('\n');
+        // Production-totals (BOM) block — same idea as the in-stock CSV.
+        // Sorted descending so the highest-demand spec is at the top.
+        const bomRows = [];
+        if (bomTotals.size > 0) {
+            // Indexes into headers used to align the BOM cells: 11 = "Main Item",
+            // 12 = "Selected Option" (used here as the "spec" column), 15 = "Main Quantity".
+            bomRows.push([]);
+            const labelRow = new Array(headers.length).fill('');
+            labelRow[1] = 'PRODUCTION TOTALS (active items only)';
+            labelRow[15] = 'Quantity';
+            bomRows.push(labelRow);
+            const sorted = [...bomTotals.entries()].sort((a, b) => b[1] - a[1]);
+            for (const [spec, qty] of sorted) {
+                const row = new Array(headers.length).fill('');
+                row[11] = spec; // GB-name + spec combined into the "Main Item" cell
+                row[15] = qty;  // Quantity
+                bomRows.push(row);
+            }
+            const grandTotal = [...bomTotals.values()].reduce((s, n) => s + n, 0);
+            const totalRow = new Array(headers.length).fill('');
+            totalRow[11] = 'GRAND TOTAL';
+            totalRow[15] = grandTotal;
+            bomRows.push(totalRow);
+        }
+
+        const allRows = [...rows, ...bomRows];
+        const csv = [headers.map(esc).join(','), ...allRows.map(r => r.map(esc).join(','))].join('\n');
         res.setHeader('Content-Type', 'text/csv');
         res.setHeader('Content-Disposition', `attachment; filename="${gb.name.replace(/[^a-zA-Z0-9]/g, '_')}_orders.csv"`);
         return res.status(200).send(csv);

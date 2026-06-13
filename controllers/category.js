@@ -34,6 +34,8 @@ module.exports.listCategories = async (req, res) => {
                 sortOrder: r.sortOrder ?? 1000,
                 pinnedProductIds: r.pinnedProductIds || [],
                 pinnedGroupBuyIds: r.pinnedGroupBuyIds || [],
+                landingPage: Array.isArray(r.landingPage) ? r.landingPage : [],
+                customPageHtml: r.customPageHtml || '',
                 hasRecord: true,
             });
         }
@@ -51,6 +53,8 @@ module.exports.listCategories = async (req, res) => {
                     sortOrder: 1000,
                     pinnedProductIds: [],
                     pinnedGroupBuyIds: [],
+                    landingPage: [],
+                    customPageHtml: '',
                     hasRecord: false,
                 });
             }
@@ -90,6 +94,7 @@ module.exports.getCategory = async (req, res) => {
                 _id: null, name, slug,
                 image: { url: '', altText: '' }, description: '',
                 sortOrder: 1000, pinnedProductIds: [], pinnedGroupBuyIds: [],
+                landingPage: [], customPageHtml: '',
                 hasRecord: false,
             });
         }
@@ -101,7 +106,7 @@ module.exports.getCategory = async (req, res) => {
    if the slug already has a record. */
 module.exports.createCategory = async (req, res) => {
     try {
-        const { name, slug, image, description, sortOrder, pinnedProductIds, pinnedGroupBuyIds } = req.body;
+        const { name, slug, image, description, sortOrder, pinnedProductIds, pinnedGroupBuyIds, landingPage, customPageHtml } = req.body;
         if (!name) return res.status(400).json({ error: 'name is required.' });
         const finalSlug = String(slug || name).trim().toLowerCase().replace(/\s+/g, '-');
         const exists = await Category.findOne({ slug: finalSlug });
@@ -113,6 +118,8 @@ module.exports.createCategory = async (req, res) => {
             sortOrder: sortOrder == null ? 1000 : Number(sortOrder),
             pinnedProductIds: Array.isArray(pinnedProductIds) ? pinnedProductIds : [],
             pinnedGroupBuyIds: Array.isArray(pinnedGroupBuyIds) ? pinnedGroupBuyIds : [],
+            landingPage: Array.isArray(landingPage) ? landingPage : [],
+            customPageHtml: customPageHtml || '',
         });
         return res.status(201).json(created);
     } catch (error) { errorHandler(error, req, res); }
@@ -123,7 +130,7 @@ module.exports.createCategory = async (req, res) => {
    has to update those manually if they want the old data to follow. */
 module.exports.updateCategory = async (req, res) => {
     try {
-        const allowed = ['name', 'slug', 'image', 'description', 'sortOrder', 'pinnedProductIds', 'pinnedGroupBuyIds'];
+        const allowed = ['name', 'slug', 'image', 'description', 'sortOrder', 'pinnedProductIds', 'pinnedGroupBuyIds', 'landingPage', 'customPageHtml'];
         const patch = {};
         for (const k of allowed) if (req.body[k] !== undefined) patch[k] = req.body[k];
         if (patch.slug) {

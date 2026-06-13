@@ -10,7 +10,7 @@ const blockSchema = new mongoose.Schema({
         // productHero, and groupBuys — admin picks source + layout inside it.
         // The old types stay in the enum so legacy docs continue to validate
         // until the controller migrates them on read.
-        enum: ['hero', 'categoryStrip', 'collection', 'productGrid', 'productHero', 'banner', 'groupBuys'],
+        enum: ['hero', 'categoryStrip', 'categoriesGrid', 'collection', 'productGrid', 'productHero', 'banner', 'groupBuys'],
         required: true
     },
     enabled: { type: Boolean, default: true },
