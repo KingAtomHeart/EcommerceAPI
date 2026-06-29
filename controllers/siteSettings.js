@@ -1,6 +1,6 @@
 const SiteSettings = require('../models/SiteSettings.js');
 
-const ALLOWED_STYLES = ['classic', 'minimal', 'pastel-paper'];
+const ALLOWED_STYLES = ['classic', 'minimal', 'pastel-paper', 'pixel'];
 
 exports.getSiteSettings = async (req, res, next) => {
     try {
