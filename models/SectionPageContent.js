@@ -15,7 +15,16 @@ const blockSchema = new mongoose.Schema({
 }, { _id: true });
 
 const sectionPageContentSchema = new mongoose.Schema({
-    pageKey: { type: String, required: true, unique: true, enum: ['shop', 'group-buys'] },
+    // Built-in pages use the reserved keys 'shop' / 'group-buys'. Custom,
+    // admin-created pages use a slug derived from their title and live at
+    // /p/<pageKey>. The enum lock was removed so any slug is allowed.
+    pageKey: { type: String, required: true, unique: true },
+    // Custom-page metadata (built-in pages leave these at defaults).
+    title: { type: String, default: '' },        // display name for custom pages
+    isCustom: { type: Boolean, default: false },  // true for admin-created pages
+    navInclude: { type: Boolean, default: false },// render a link in the navbar
+    navLabel: { type: String, default: '' },      // navbar link text (falls back to title)
+    navOrder: { type: Number, default: 100 },     // navbar ordering (low = first)
     blocks: { type: [blockSchema], default: [] },
     // Catalog-grid alignment for the page below the blocks. The catalog grid
     // itself isn't built out of blocks — it's the live product/group-buy list

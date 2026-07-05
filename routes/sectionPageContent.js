@@ -3,10 +3,13 @@ const router = express.Router();
 const ctrl = require('../controllers/sectionPageContent.js');
 const { verify, verifyAdmin } = require('../auth.js');
 
-// Public read so the shop / group-buys pages can render blocks.
+// Public reads so the navbar can list pages and the customer page can render.
+router.get('/', ctrl.listPages);
 router.get('/:pageKey', ctrl.getPageContent);
 
-// Admin write.
+// Admin writes.
+router.post('/', verify, verifyAdmin, ctrl.createPage);
 router.patch('/:pageKey', verify, verifyAdmin, ctrl.updatePageContent);
+router.delete('/:pageKey', verify, verifyAdmin, ctrl.deletePage);
 
 module.exports = router;
