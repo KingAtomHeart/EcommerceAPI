@@ -8,6 +8,12 @@ const GroupBuyOrder = require('../models/GroupBuyOrder.js');
 const OrderAddToken = require('../models/OrderAddToken.js');
 const { errorHandler } = require('../auth.js');
 
+// International shipping isn't wired yet (a proper calculator is planned). Global
+// addresses can be saved, but checkout is gated to PH until then so nothing is
+// mispriced. Kept as one message so both order paths stay in sync.
+const INTL_SHIPPING_MSG = "International shipping isn't available yet — we currently ship within the Philippines. Please contact us to arrange an international order.";
+const isInternational = (addr) => !!addr?.country && addr.country !== 'Philippines';
+
 const paymongoRequest = (method, path, body) => new Promise((resolve, reject) => {
     const encoded = Buffer.from(`${process.env.PAYMONGO_SECRET_KEY}:`).toString('base64');
     const payload = body ? JSON.stringify(body) : null;
@@ -33,6 +39,47 @@ const paymongoRequest = (method, path, body) => new Promise((resolve, reject) =>
     if (payload) req.write(payload);
     req.end();
 });
+
+// ─── PayPal REST (Orders v2) ──────────────────────────────────────────────────
+// Mirrors paymongoRequest, but PayPal needs an OAuth2 access token first, so we
+// fetch one per call. Sandbox vs live is env-driven (PAYPAL_ENV=live).
+const PAYPAL_HOST = process.env.PAYPAL_ENV === 'live' ? 'api-m.paypal.com' : 'api-m.sandbox.paypal.com';
+
+const paypalHttp = (method, path, headers, payload) => new Promise((resolve, reject) => {
+    const options = {
+        hostname: PAYPAL_HOST, path, method,
+        headers: { ...headers, ...(payload && { 'Content-Length': Buffer.byteLength(payload) }) }
+    };
+    const req = https.request(options, res => {
+        let data = '';
+        res.on('data', chunk => data += chunk);
+        res.on('end', () => {
+            try { resolve({ status: res.statusCode, body: data ? JSON.parse(data) : {} }); }
+            catch { reject(new Error('Invalid PayPal response')); }
+        });
+    });
+    req.on('error', reject);
+    if (payload) req.write(payload);
+    req.end();
+});
+
+const paypalAccessToken = async () => {
+    const creds = Buffer.from(`${process.env.PAYPAL_CLIENT_ID}:${process.env.PAYPAL_SECRET}`).toString('base64');
+    const res = await paypalHttp('POST', '/v1/oauth2/token', {
+        'Authorization': `Basic ${creds}`,
+        'Content-Type': 'application/x-www-form-urlencoded',
+    }, 'grant_type=client_credentials');
+    if (res.status !== 200 || !res.body.access_token) throw new Error('PayPal authentication failed');
+    return res.body.access_token;
+};
+
+const paypalRequest = async (method, path, body) => {
+    const token = await paypalAccessToken();
+    return paypalHttp(method, path, {
+        'Authorization': `Bearer ${token}`,
+        'Content-Type': 'application/json',
+    }, body != null ? JSON.stringify(body) : null);
+};
 
 const decrementStocksForCart = async (cart, Product) => {
     for (const item of cart.cartItems) {
@@ -397,6 +444,7 @@ module.exports.createOrder = async (req, res) => {
         const { computeShippingFromProvince } = require('../utils/shipping.js');
         const { shippingAddress, billingAddress } = req.body || {};
         let shippingFee = 0, shippingRegion = null;
+        if (isInternational(shippingAddress)) return res.status(400).json({ error: INTL_SHIPPING_MSG });
         if (shippingAddress?.province) {
             if (!shippingAddress.fullName || !shippingAddress.phone || !shippingAddress.street || !shippingAddress.city) {
                 return res.status(400).json({ error: 'Please provide a complete shipping address.' });
@@ -591,6 +639,366 @@ module.exports.checkoutGroupBuy = async (req, res) => {
 
 
 // ─── Create PayMongo Payment Session ─────────────────────────────────────────
+// ─── Shared order helpers (used by the PayPal flow) ───────────────────────────
+// NOTE: these mirror the validation/finalization inside createPaymentSession +
+// handleWebhook (the PayMongo path). They're kept separate for now so the PayPal
+// work doesn't touch the dormant PayMongo code; unify when PayMongo is revived.
+
+// Validate the user's cart, price it, compute shipping, and persist an Order in
+// `awaiting_payment` state (stock is NOT decremented until payment confirms).
+// Returns { order, productsOrdered, shipResult, shippingFee } on success, or
+// { status, error } describing a validation failure.
+async function buildPendingOrderFromCart(userId, body) {
+    const cart = await Cart.findOne({ userId }).populate({
+        path: 'cartItems.productId',
+        select: 'name price stocks isActive options configurations useVariants variants configAvailabilityRules parentProductId images',
+        populate: { path: 'parentProductId', select: 'name images' }
+    });
+
+    if (!cart || cart.cartItems.length === 0) {
+        return { status: 400, error: 'Your cart is empty.' };
+    }
+
+    const configTotals = new Map();
+    for (const item of cart.cartItems) {
+        for (const c of (item.configurations || [])) {
+            const key = `${item.productId?._id || item.productId}::${c.name}::${c.selected}`;
+            configTotals.set(key, (configTotals.get(key) || 0) + item.quantity);
+        }
+    }
+
+    for (const item of cart.cartItems) {
+        const product = item.productId;
+        if (!product) continue;
+        const configMap = Object.fromEntries((item.configurations || []).map(c => [c.name, c.selected]));
+        for (const c of (item.configurations || [])) {
+            const cfgDef = product.configurations?.find(cf => cf.name === c.name);
+            const opt = cfgDef?.options?.find(o => o.value === c.selected);
+            if (!opt) continue;
+            if (opt.available === false) return { status: 400, error: `"${opt.value}" for ${c.name} is no longer available.` };
+            if (opt.stocks >= 0) {
+                const key = `${product._id}::${c.name}::${c.selected}`;
+                const requested = configTotals.get(key) || 0;
+                if (opt.stocks < requested) return { status: 400, error: `Only ${opt.stocks} "${opt.value}" (${c.name}) in stock.` };
+            }
+            if (product.configAvailabilityRules?.length > 0) {
+                for (const rule of product.configAvailabilityRules) {
+                    if (rule.targetConfigName !== c.name) continue;
+                    const conds = rule.conditions || (rule.configName ? [{ configName: rule.configName, selectedValue: rule.selectedValue }] : []);
+                    const active = conds.length > 0 && conds.every(cond => configMap[cond.configName] === cond.selectedValue);
+                    if (active && !rule.availableValues.includes(c.selected)) {
+                        return { status: 400, error: `"${c.selected}" for ${c.name} is not valid with the selected configuration.` };
+                    }
+                }
+            }
+        }
+    }
+
+    const productsOrdered = [];
+    let totalPrice = 0;
+
+    for (const item of cart.cartItems) {
+        const product = item.productId;
+        if (!product) return { status: 400, error: 'A product in your cart no longer exists.' };
+        if (!product.isActive) return { status: 400, error: `"${product.name}" is no longer available.` };
+
+        const displayName = product.parentProductId?.name || product.name;
+        const displayImage = product.parentProductId?.images?.[0]?.url || product.images?.[0]?.url || '';
+
+        if (product.useVariants && item.variantId) {
+            const variant = product.variants?.id(item.variantId);
+            if (!variant) return { status: 400, error: `A variant in your cart no longer exists for "${product.name}".` };
+            if (variant.available === false) return { status: 400, error: `A selected variant is no longer available for "${product.name}".` };
+            if (variant.stock >= 0 && variant.stock < item.quantity) {
+                return { status: 400, error: `Only ${variant.stock} in stock for your selected variant of "${product.name}".` };
+            }
+            const vUnit = (product.price || 0) + (variant.price || 0);
+            const vSubtotal = vUnit * item.quantity;
+            totalPrice += vSubtotal;
+            const attrs = variant.attributes instanceof Map ? Object.fromEntries(variant.attributes) : (variant.attributes || {});
+            const attrStr = Object.entries(attrs).map(([k, v]) => `${k}: ${v}`).join(', ');
+            productsOrdered.push({
+                productId: product._id,
+                productName: displayName + (attrStr ? ` (${attrStr})` : ''),
+                productImage: displayImage,
+                quantity: item.quantity,
+                subtotal: vSubtotal,
+                variantId: item.variantId,
+                variantAttributes: attrs
+            });
+            continue;
+        }
+
+        let unitPrice = product.price;
+        let optionLabel = '';
+
+        if (item.selectedOption?.groupId) {
+            const group = product.options?.id(item.selectedOption.groupId);
+            const val = group?.values?.id(item.selectedOption.valueId);
+            if (!val) return { status: 400, error: `Option no longer exists for "${product.name}".` };
+            if (val.stocks >= 0 && val.stocks < item.quantity) return { status: 400, error: `"${product.name} — ${val.value}" only has ${val.stocks} in stock.` };
+            unitPrice = (product.price || 0) + (val.price || 0);
+            optionLabel = ` — ${item.selectedOption.groupName}: ${item.selectedOption.value}`;
+        } else if (product.stocks !== undefined && product.stocks !== -1 && product.stocks < item.quantity) {
+            return { status: 400, error: `"${product.name}" only has ${product.stocks} in stock.` };
+        }
+
+        if (item.configurations?.length > 0) {
+            for (const chosen of item.configurations) {
+                const cfgDef = product.configurations?.find(c => c.name === chosen.name);
+                const opt = cfgDef?.options?.find(o => o.value === chosen.selected);
+                if (opt?.priceModifier > 0) unitPrice += opt.priceModifier;
+            }
+        }
+
+        const subtotal = unitPrice * item.quantity;
+        totalPrice += subtotal;
+        const configStr = (item.configurations || []).map(c => `${c.name}: ${c.selected}`).join(', ');
+        productsOrdered.push({
+            productId: product._id,
+            productName: displayName + optionLabel + (configStr ? ` (${configStr})` : ''),
+            productImage: displayImage,
+            quantity: item.quantity,
+            subtotal,
+            selectedOption: item.selectedOption?.groupId ? {
+                groupId: item.selectedOption.groupId,
+                groupName: item.selectedOption.groupName,
+                valueId: item.selectedOption.valueId,
+                value: item.selectedOption.value
+            } : undefined,
+            configurations: item.configurations || []
+        });
+    }
+
+    const { computeShippingFromProvince } = require('../utils/shipping.js');
+    const { shippingAddress, billingAddress } = body || {};
+    if (isInternational(shippingAddress)) return { status: 400, error: INTL_SHIPPING_MSG };
+    if (!shippingAddress?.fullName || !shippingAddress?.phone || !shippingAddress?.street || !shippingAddress?.city || !shippingAddress?.province) {
+        return { status: 400, error: 'Please provide a complete shipping address.' };
+    }
+    const shipResult = computeShippingFromProvince(shippingAddress.province);
+    if (!shipResult.ok) return { status: 400, error: shipResult.error };
+    const shippingFee = shipResult.fee;
+    const grandTotal = totalPrice + shippingFee;
+
+    const order = new Order({
+        userId,
+        productsOrdered,
+        totalPrice: grandTotal,
+        shippingFee,
+        shippingRegion: shipResult.regionCode,
+        shippingAddress,
+        billingAddress: (billingAddress && billingAddress.fullName) ? billingAddress : shippingAddress,
+        paymentStatus: 'awaiting_payment'
+    });
+    await order.save();
+
+    return { order, productsOrdered, shipResult, shippingFee };
+}
+
+// Mark a confirmed-paid order as processing, decrement stock, and clear the cart.
+// Build the list of atomic stock-decrement operations for one ordered item.
+// Each op decrements exactly one TRACKED location (unlimited `-1` locations are
+// skipped) with a conditional `$gte` guard, so two shoppers racing for the last
+// unit can't both win — the database lets exactly one `$inc` through (FCFS).
+// Every op ships with a `compensate` (re-increment) used to roll back if a later
+// item in the same order turns out to be out of stock.
+function buildStockOps(product, item) {
+    const pid = product._id;
+    const qty = item.quantity;
+    const ops = [];
+
+    if (item.variantId && product.useVariants) {
+        const variant = product.variants?.id(item.variantId);
+        if (variant && variant.stock >= 0) {
+            ops.push({
+                attempt: async () => (await Product.updateOne(
+                    { _id: pid, variants: { $elemMatch: { _id: item.variantId, stock: { $gte: qty } } } },
+                    { $inc: { 'variants.$.stock': -qty } }
+                )).modifiedCount > 0,
+                compensate: () => Product.updateOne({ _id: pid, 'variants._id': item.variantId }, { $inc: { 'variants.$.stock': qty } }),
+                availFix: () => Product.updateOne({ _id: pid }, { $set: { 'variants.$[v].available': false } }, { arrayFilters: [{ 'v._id': item.variantId, 'v.stock': { $lte: 0 } }] }),
+            });
+        }
+    } else if (item.selectedOption?.groupId) {
+        const group = product.options?.id(item.selectedOption.groupId);
+        const val = group?.values?.id(item.selectedOption.valueId);
+        if (val && val.stocks >= 0) {
+            const gId = item.selectedOption.groupId, vId = item.selectedOption.valueId;
+            ops.push({
+                attempt: async () => (await Product.updateOne(
+                    { _id: pid },
+                    { $inc: { 'options.$[g].values.$[v].stocks': -qty } },
+                    { arrayFilters: [{ 'g._id': gId }, { 'v._id': vId, 'v.stocks': { $gte: qty } }] }
+                )).modifiedCount > 0,
+                compensate: () => Product.updateOne({ _id: pid }, { $inc: { 'options.$[g].values.$[v].stocks': qty } }, { arrayFilters: [{ 'g._id': gId }, { 'v._id': vId }] }),
+                availFix: () => Product.updateOne({ _id: pid }, { $set: { 'options.$[g].values.$[v].available': false } }, { arrayFilters: [{ 'g._id': gId }, { 'v._id': vId, 'v.stocks': { $lte: 0 } }] }),
+            });
+        }
+    } else if (product.stocks !== undefined && product.stocks !== -1) {
+        ops.push({
+            attempt: async () => (await Product.updateOne(
+                { _id: pid, stocks: { $gte: qty } },
+                { $inc: { stocks: -qty } }
+            )).modifiedCount > 0,
+            compensate: () => Product.updateOne({ _id: pid }, { $inc: { stocks: qty } }),
+            availFix: null,
+        });
+    }
+
+    for (const chosen of (item.configurations || [])) {
+        const cfgDef = product.configurations?.find(c => c.name === chosen.name);
+        const cfgOpt = cfgDef?.options?.find(o => o.value === chosen.selected);
+        if (cfgOpt && cfgOpt.stocks >= 0) {
+            const cName = chosen.name, oVal = chosen.selected;
+            ops.push({
+                attempt: async () => (await Product.updateOne(
+                    { _id: pid },
+                    { $inc: { 'configurations.$[c].options.$[o].stocks': -qty } },
+                    { arrayFilters: [{ 'c.name': cName }, { 'o.value': oVal, 'o.stocks': { $gte: qty } }] }
+                )).modifiedCount > 0,
+                compensate: () => Product.updateOne({ _id: pid }, { $inc: { 'configurations.$[c].options.$[o].stocks': qty } }, { arrayFilters: [{ 'c.name': cName }, { 'o.value': oVal }] }),
+                availFix: () => Product.updateOne({ _id: pid }, { $set: { 'configurations.$[c].options.$[o].available': false } }, { arrayFilters: [{ 'c.name': cName }, { 'o.value': oVal, 'o.stocks': { $lte: 0 } }] }),
+            });
+        }
+    }
+
+    return ops;
+}
+
+// Placeholder refund hook. PayPal refunds aren't wired yet, so for now we only
+// flag the order (needsRefund) and log loudly so it can be handled manually. When
+// refunds are enabled, issue POST /v2/payments/captures/{captureId}/refund here.
+async function refundCapturedOrder(order) {
+    console.warn(`[refund] Order ${order._id} (${order.orderNumber || '—'}) needs a refund — ${order.refundReason}. Capture: ${order.paymentCaptureId || 'unknown'}. Automatic PayPal refund is not wired yet.`);
+}
+
+// Confirm a paid order: atomically decrement stock (race-safe / FCFS), then mark
+// the order processing and clear the cart. If any item sold out during the ~few
+// seconds of checkout, every decrement already applied for this order is rolled
+// back and the order is flagged for refund (money was already captured).
+// Returns { ok: true } on success, or { ok: false, soldOut: true } on a stock race.
+async function finalizePaidOrder(order, paymentMethod) {
+    const compensations = [];
+    const availFixes = []; // "mark sold out" flags — applied only if the whole order succeeds
+    let soldOutItem = null;
+
+    for (const item of order.productsOrdered) {
+        const product = await Product.findById(item.productId);
+        if (!product) continue;
+
+        for (const op of buildStockOps(product, item)) {
+            const ok = await op.attempt();
+            if (!ok) { soldOutItem = item; break; }
+            compensations.push(op.compensate);
+            if (op.availFix) availFixes.push(op.availFix);
+        }
+        if (soldOutItem) break;
+    }
+
+    if (soldOutItem) {
+        // Roll back everything already reserved for this order (newest first).
+        for (const compensate of compensations.reverse()) {
+            try { await compensate(); } catch (e) { console.error('[stock] compensation failed:', e.message); }
+        }
+        order.paymentStatus = 'paid';
+        order.paymentMethod = paymentMethod;
+        order.status = 'Cancelled';
+        order.paidAt = new Date();
+        order.needsRefund = true;
+        order.refundReason = `Out of stock: ${soldOutItem.productName || 'item'}`;
+        await order.save();
+        await refundCapturedOrder(order).catch(e => console.error('[refund] hook failed:', e.message));
+        return { ok: false, soldOut: true };
+    }
+
+    // All items reserved — now flip any locations that hit zero to unavailable.
+    for (const fix of availFixes) { try { await fix(); } catch (e) { /* cosmetic; ignore */ } }
+
+    order.paymentStatus = 'paid';
+    order.paymentMethod = paymentMethod;
+    order.status = 'Processing';
+    order.paidAt = new Date();
+    await order.save();
+    await Cart.deleteOne({ userId: order.userId });
+    return { ok: true };
+}
+
+// ─── PayPal: create an order for the current cart ─────────────────────────────
+module.exports.createPaypalOrder = async (req, res) => {
+    try {
+        const built = await buildPendingOrderFromCart(req.user.id, req.body);
+        if (built.error) return res.status(built.status).json({ error: built.error });
+        const { order } = built;
+
+        const ppRes = await paypalRequest('POST', '/v2/checkout/orders', {
+            intent: 'CAPTURE',
+            purchase_units: [{
+                custom_id: order._id.toString(),
+                amount: { currency_code: 'PHP', value: order.totalPrice.toFixed(2) },
+            }],
+        });
+
+        if ((ppRes.status !== 200 && ppRes.status !== 201) || !ppRes.body?.id) {
+            console.error('[PayPal] create order failed:', ppRes.status, JSON.stringify(ppRes.body));
+            await Order.findByIdAndDelete(order._id);
+            return res.status(502).json({ error: 'Failed to start PayPal checkout. Please try again.' });
+        }
+
+        order.paymentSessionId = ppRes.body.id;
+        await order.save();
+        return res.status(200).json({ paypalOrderId: ppRes.body.id, orderId: order._id });
+    } catch (error) {
+        errorHandler(error, req, res);
+    }
+};
+
+// ─── PayPal: capture an approved order (server-side payment confirmation) ──────
+module.exports.capturePaypalOrder = async (req, res) => {
+    try {
+        const { paypalOrderId, orderId } = req.body || {};
+        if (!paypalOrderId || !orderId) return res.status(400).json({ error: 'Missing payment details.' });
+
+        const order = await Order.findOne({ _id: orderId, userId: req.user.id });
+        if (!order) return res.status(404).json({ error: 'Order not found.' });
+        if (order.paymentStatus === 'paid') return res.status(200).json({ success: true, orderId: order._id });
+        if (order.paymentStatus !== 'awaiting_payment') return res.status(400).json({ error: 'This order is not awaiting payment.' });
+        // The PayPal order id must be the one we created for THIS order.
+        if (order.paymentSessionId && order.paymentSessionId !== paypalOrderId) {
+            return res.status(400).json({ error: 'Payment reference mismatch.' });
+        }
+
+        const cap = await paypalRequest('POST', `/v2/checkout/orders/${paypalOrderId}/capture`, {});
+        const capture = cap.body?.purchase_units?.[0]?.payments?.captures?.[0];
+        if ((cap.status !== 200 && cap.status !== 201) || cap.body?.status !== 'COMPLETED' || capture?.status !== 'COMPLETED') {
+            console.error('[PayPal] capture not completed:', cap.status, JSON.stringify(cap.body));
+            return res.status(400).json({ error: 'Payment was not completed. You have not been charged.' });
+        }
+
+        // Guard against amount tampering — the captured total must match the order.
+        const paid = Number(capture.amount?.value);
+        if (!Number.isFinite(paid) || Math.abs(paid - order.totalPrice) > 0.01) {
+            console.error('[PayPal] amount mismatch:', paid, 'vs', order.totalPrice);
+            return res.status(400).json({ error: 'Captured amount does not match the order total.' });
+        }
+
+        order.paymentCaptureId = capture.id; // needed to issue a refund later
+
+        const result = await finalizePaidOrder(order, 'paypal');
+        if (result && result.soldOut) {
+            // Paid, but an item sold out during checkout — flagged for refund.
+            return res.status(409).json({
+                error: 'Sorry — an item in your order sold out just as your payment completed. Your payment will be refunded; please contact us if you have any questions.',
+                soldOut: true,
+                orderId: order._id,
+            });
+        }
+        return res.status(200).json({ success: true, orderId: order._id });
+    } catch (error) {
+        errorHandler(error, req, res);
+    }
+};
+
 module.exports.createPaymentSession = async (req, res) => {
     try {
         const userId = req.user.id;

@@ -12,6 +12,7 @@ const userSchema = new mongoose.Schema({
     addresses: [{
         fullName: String, phone: String,
         street: String, city: String, province: String, postalCode: String,
+        country: { type: String, default: 'Philippines' },
         isDefault: { type: Boolean, default: false }
     }]
 }, { timestamps: true });

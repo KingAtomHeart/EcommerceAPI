@@ -9,6 +9,7 @@ router.post('/google-login', userController.googleLogin);
 router.get('/details', verify, userController.getProfile);
 router.patch('/update-password', verify, userController.updatePassword);
 router.patch('/update-mobile', verify, userController.updateMobile);
+router.patch('/update-profile', verify, userController.updateProfile);
 router.patch('/update-profile-picture', verify, userController.updateProfilePicture);
 router.post('/addresses', verify, userController.addAddress);
 router.patch('/addresses/:addressId', verify, userController.updateAddress);

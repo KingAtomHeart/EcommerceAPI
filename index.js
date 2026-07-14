@@ -14,6 +14,7 @@ const pageContentRoutes = require('./routes/sectionPageContent');
 const contactRoutes = require('./routes/contact');
 const categoryRoutes = require('./routes/category');
 const siteSettingsRoutes = require('./routes/siteSettings');
+const currencyRoutes = require('./routes/currency');
 const { errorHandler } = require('./auth');
 
 const app = express();
@@ -68,6 +69,7 @@ app.use('/b1/page-content', pageContentRoutes);
 app.use('/b1/contact', contactRoutes);
 app.use('/b1/categories', categoryRoutes);
 app.use('/b1/site-settings', siteSettingsRoutes);
+app.use('/b1/currency', currencyRoutes);
 
 // Health check
 app.get('/health', (req, res) => res.status(200).json({ status: 'OK' }));

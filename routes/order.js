@@ -4,6 +4,8 @@ const orderController = require('../controllers/order.js');
 const { verify, verifyAdmin } = require('../auth.js');
 
 router.post('/create-payment', verify, orderController.createPaymentSession);
+router.post('/paypal/create-order', verify, orderController.createPaypalOrder);
+router.post('/paypal/capture-order', verify, orderController.capturePaypalOrder);
 router.post('/webhook', orderController.handleWebhook);
 router.get('/payment-status/:orderId', verify, orderController.getPaymentStatus);
 router.post('/checkout', verify, orderController.createOrder);

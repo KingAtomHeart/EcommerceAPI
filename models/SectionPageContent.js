@@ -7,7 +7,7 @@ const mongoose = require('mongoose');
 const blockSchema = new mongoose.Schema({
     type: {
         type: String,
-        enum: ['hero', 'categoryStrip', 'categoriesGrid', 'collection', 'productGrid', 'productHero', 'banner', 'groupBuys', 'catalog'],
+        enum: ['hero', 'categoryStrip', 'categoriesGrid', 'collection', 'productGrid', 'productHero', 'banner', 'groupBuys', 'catalog', 'customHtml'],
         required: true
     },
     enabled: { type: Boolean, default: true },

@@ -125,9 +125,16 @@ module.exports.googleLogin = async (req, res) => {
 // ─── Get Profile ──────────────────────────────────────────────────────────────
 module.exports.getProfile = async (req, res) => {
     try {
-        const user = await User.findById(req.user.id).select('-password');
+        const user = await User.findById(req.user.id);
         if (!user) return res.status(404).json({ error: 'User not found.' });
-        return res.status(200).json({ user });
+        // Never expose the hash, but tell the client whether a password exists so
+        // it can hide the "Password & Security" section for Google-only accounts
+        // (which have no password to change). A user who registered by email and
+        // later linked Google still has a password, so this stays true for them.
+        const safe = user.toObject();
+        delete safe.password;
+        safe.hasPassword = !!user.password;
+        return res.status(200).json({ user: safe });
     } catch (error) {
         errorHandler(error, req, res);
     }
@@ -181,6 +188,34 @@ module.exports.updateMobile = async (req, res) => {
 };
 
 
+// ─── Update Profile (name + mobile) ──────────────────────────────────────────
+module.exports.updateProfile = async (req, res) => {
+    try {
+        const { firstName, lastName, mobileNo } = req.body || {};
+        const updates = {};
+        if (firstName !== undefined) {
+            if (!String(firstName).trim()) return res.status(400).json({ error: 'First name cannot be empty.' });
+            updates.firstName = String(firstName).trim();
+        }
+        if (lastName !== undefined) {
+            if (!String(lastName).trim()) return res.status(400).json({ error: 'Last name cannot be empty.' });
+            updates.lastName = String(lastName).trim();
+        }
+        if (mobileNo !== undefined) {
+            if (!/^\d{11}$/.test(mobileNo)) return res.status(400).json({ error: 'Mobile number must be exactly 11 digits.' });
+            updates.mobileNo = mobileNo;
+        }
+        if (Object.keys(updates).length === 0) return res.status(400).json({ error: 'No changes provided.' });
+
+        const user = await User.findByIdAndUpdate(req.user.id, updates, { new: true, runValidators: true }).select('-password');
+        if (!user) return res.status(404).json({ error: 'User not found.' });
+        return res.status(200).json({ message: 'Profile updated.', user });
+    } catch (error) {
+        errorHandler(error, req, res);
+    }
+};
+
+
 // ─── Profile Picture ─────────────────────────────────────────────────────────
 module.exports.updateProfilePicture = async (req, res) => {
     try {
@@ -216,6 +251,7 @@ module.exports.addAddress = async (req, res) => {
             fullName: address.fullName, phone: address.phone,
             street: address.street, city: address.city,
             province: address.province, postalCode: address.postalCode || '',
+            country: address.country || 'Philippines',
             isDefault: wantsDefault,
         });
         await user.save();
@@ -237,6 +273,7 @@ module.exports.updateAddress = async (req, res) => {
             fullName: address.fullName, phone: address.phone,
             street: address.street, city: address.city,
             province: address.province, postalCode: address.postalCode || '',
+            country: address.country || 'Philippines',
             isDefault: !!address.isDefault || target.isDefault,
         });
         // Ensure at least one default remains

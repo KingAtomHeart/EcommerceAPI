@@ -54,11 +54,13 @@ const orderSchema = new mongoose.Schema({
         street: { type: String },
         city: { type: String },
         province: { type: String },
-        postalCode: { type: String }
+        postalCode: { type: String },
+        country: { type: String, default: 'Philippines' }
     },
     billingAddress: {
         fullName: String, phone: String,
-        street: String, city: String, province: String, postalCode: String
+        street: String, city: String, province: String, postalCode: String,
+        country: String
     },
     status: {
         type: String,
@@ -72,7 +74,13 @@ const orderSchema = new mongoose.Schema({
     },
     paymentMethod: { type: String },
     paymentSessionId: { type: String },
-    paidAt: { type: Date }
+    paymentCaptureId: { type: String }, // PayPal capture id — used to issue refunds
+    paidAt: { type: Date },
+    // Set when payment was captured but the order can't be fulfilled (e.g. an
+    // item sold out in the seconds during checkout). The money is held pending a
+    // refund. See refundCapturedOrder() in controllers/order.js.
+    needsRefund: { type: Boolean, default: false },
+    refundReason: { type: String }
 }, { timestamps: true });
 
 // Auto-allocate an order number on first save. Retries on the rare unique-index hit.
